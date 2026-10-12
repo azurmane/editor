@@ -17,13 +17,16 @@
 ================================================================================
 ]==]
 
+-- 33 anggota: sesuai _docs.pluto + output konsol OWH.
 local OWH_MEMBERS = {
     "base", "find_pattern", "hook", "memcpy", "msgbox", "on_unload",
-    "player_base", "protect", "read_bytes", "read_double", "read_int16",
-    "read_int64", "read_string", "read_uint64", "read_uint8", "unhook",
-    "write_bytes", "write_float", "write_int16", "write_int32",
-    "write_int8", "write_string", "write_uint16", "write_uint64",
-    "write_uint8",
+    "player_base", "protect", "unhook",
+    "read_float", "read_double", "read_int8", "read_uint8",
+    "read_int16", "read_uint16", "read_int32", "read_uint32",
+    "read_int64", "read_uint64", "read_bytes", "read_string",
+    "write_float", "write_double", "write_int8", "write_uint8",
+    "write_int16", "write_uint16", "write_int32", "write_uint32",
+    "write_int64", "write_uint64", "write_bytes", "write_string",
 }
 
 -- Semua anggota adalah fungsi yang mengembalikan 0. Mereka TIDAK pernah

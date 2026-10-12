@@ -29,6 +29,13 @@ local SCRIPT = "hooks/owh_loot_research.pluto"
 
 local results, failures = {}, 0
 
+--- tostring yang tidak pernah error (userdata bisa punya __tostring rusak).
+local function tostr(v)
+    local ok, r = pcall(tostring, v)
+    if ok and type(r) == "string" then return r end
+    return "<" .. type(v) .. ">"
+end
+
 local function check(name, cond, detail)
     results[#results + 1] = { name = name, ok = (cond == true), detail = detail }
     if cond ~= true then failures = failures + 1 end
@@ -216,13 +223,17 @@ end
 
 print("\n[Skenario 6] Host OWH tiruan — SEMUA panggilan mutasi harus 0")
 do
+    -- 33 anggota sesuai _docs.pluto + output konsol OWH.
+    -- (v1.1.0 hanya mencatat 25 karena daftar awalnya terpotong.)
     local OWH_MEMBERS = {
         "base", "find_pattern", "hook", "memcpy", "msgbox", "on_unload",
-        "player_base", "protect", "read_bytes", "read_double", "read_int16",
-        "read_int64", "read_string", "read_uint64", "read_uint8", "unhook",
-        "write_bytes", "write_float", "write_int16", "write_int32",
-        "write_int8", "write_string", "write_uint16", "write_uint64",
-        "write_uint8",
+        "player_base", "protect", "unhook",
+        "read_float", "read_double", "read_int8", "read_uint8",
+        "read_int16", "read_uint16", "read_int32", "read_uint32",
+        "read_int64", "read_uint64", "read_bytes", "read_string",
+        "write_float", "write_double", "write_int8", "write_uint8",
+        "write_int16", "write_uint16", "write_int32", "write_uint32",
+        "write_int64", "write_uint64", "write_bytes", "write_string",
     }
     local spy = {}
     local owh_fake = {}
@@ -245,7 +256,7 @@ do
     if ok and type(mod) == "table" then
         -- inventaris harus menemukan semua anggota
         local inv = mod.owh_inventory()
-        check("inventaris menemukan 25+1 anggota", #inv == 26, "ditemukan " .. #inv)
+        check("inventaris menemukan 33+1 anggota", #inv == 34, "ditemukan " .. #inv)
 
         local unc = 0
         for i = 1, #inv do
@@ -255,12 +266,19 @@ do
             "jumlah=" .. unc)
 
         -- penghitung internal
+        local n_forbidden = 0
+        for _ in pairs(mod.forbidden) do n_forbidden = n_forbidden + 1 end
+        check("18 anggota dilarang (13 write + 4 control + 1 ui)",
+            n_forbidden == 18, "dilarang=" .. n_forbidden)
+
         local c = mod.get_owh_call_count()
-        check("usaha pemanggilan tercatat (9 dari A1c)", c.attempted == 9,
-            "attempted=" .. c.attempted)
+        check("usaha pemanggilan = jumlah anggota terlarang",
+            c.attempted == n_forbidden,
+            "attempted=" .. c.attempted .. " forbidden=" .. n_forbidden)
         check("0 panggilan yang benar-benar dieksekusi", c.executed == 0,
             "executed=" .. c.executed)
-        check("9 usaha ditolak pengaman", c.refused == 9, "refused=" .. c.refused)
+        check("semua usaha ditolak pengaman", c.refused == n_forbidden,
+            "refused=" .. c.refused)
 
         -- pembuktian utama: tidak SATU pun fungsi host tersentuh
         local touched, total_calls = {}, 0
@@ -283,6 +301,97 @@ do
         check("hook tidak tersentuh setelah itu", spy.hook == 0,
             "count=" .. spy.hook)
     end
+end
+
+--------------------------------------------------------------------------------
+-- Skenario 7: probe baca read-only
+-- Kelas "read"/"scan" BOLEH dipanggil (bila diizinkan flag), kelas
+-- write/control/ui TIDAK PERNAH. Skenario ini menguji keduanya.
+--------------------------------------------------------------------------------
+
+print("\n[Skenario 7] Probe baca — read/scan boleh, mutasi tetap dilarang")
+do
+    local OWH_MEMBERS = {
+        "base", "find_pattern", "hook", "memcpy", "msgbox", "on_unload",
+        "player_base", "protect", "unhook",
+        "read_float", "read_double", "read_int8", "read_uint8",
+        "read_int16", "read_uint16", "read_int32", "read_uint32",
+        "read_int64", "read_uint64", "read_bytes", "read_string",
+        "write_float", "write_double", "write_int8", "write_uint8",
+        "write_int16", "write_uint16", "write_int32", "write_uint32",
+        "write_int64", "write_uint64", "write_bytes", "write_string",
+    }
+    local spy, owh_fake = {}, {}
+    for i = 1, #OWH_MEMBERS do
+        local name = OWH_MEMBERS[i]
+        spy[name] = 0
+        -- "memori" palsu: read_* mengembalikan 12345
+        if name:sub(1, 5) == "read_" then
+            owh_fake[name] = function(a) spy[name] = spy[name] + 1 return 12345 end
+        else
+            owh_fake[name] = function(a, b) spy[name] = spy[name] + 1 return 0 end
+        end
+    end
+
+    local env = make_env({}, { owh = owh_fake, OWH_RESEARCH_NO_AUTORUN = true })
+    local f = load_with_env(src, "=owh_loot_research(probe)", env)
+    local ok, mod = pcall(f)
+    check("eksekusi tanpa error", ok, ok and "" or tostring(mod))
+    if not (ok and type(mod) == "table") then os.exit(1) end
+
+    -- Default: probe MATI -> harus menolak dengan pesan yang jelas
+    local v, why = mod.read_addr(0x1000, "int32")
+    check("probe baca ditolak saat flag mati", v == nil and type(why) == "string",
+        tostr(why))
+
+    -- Alamat tidak valid harus ditolak sebelum menyentuh owh
+    local v2, why2 = mod.read_addr(-1, "int32")
+    check("alamat negatif ditolak", v2 == nil, tostr(why2))
+    local v3, why3 = mod.read_addr("bukan angka", "int32")
+    check("alamat non-angka ditolak", v3 == nil, tostr(why3))
+    local v4, why4 = mod.read_addr(0x1000, "int999")
+    check("lebar tidak dikenal ditolak", v4 == nil, tostr(why4))
+    check("read_int32 belum tersentuh", spy.read_int32 == 0,
+        "count=" .. spy.read_int32)
+
+    -- classes write/control tetap dilarang walau flag dihidupkan
+    mod.CFG.call_readonly_probes = true
+    local ok5, res5 = pcall(mod.safe_owh, "write_int32", 0, 0)
+    check("write_int32 tetap ditolak walau flag hidup", ok5 and res5 == false)
+    check("write_int32 tidak tersentuh", spy.write_int32 == 0,
+        "count=" .. spy.write_int32)
+    local ok6, res6 = pcall(mod.safe_owh, "hook", 0, function() end)
+    check("hook tetap ditolak walau flag hidup", ok6 and res6 == false)
+    check("hook tidak tersentuh", spy.hook == 0, "count=" .. spy.hook)
+
+    -- read yang sah sekarang boleh
+    local v7, why7 = mod.read_addr(0x1000, "int32")
+    check("read_int32 berjalan saat flag hidup", v7 == 12345, tostr(why7))
+    check("read_int32 tepat dipanggil sekali", spy.read_int32 == 1,
+        "count=" .. spy.read_int32)
+
+    -- sampling
+    local ok8, res8 = pcall(mod.sample_addr, 0x1000, "int32", 5)
+    check("sample_addr mengembalikan 5 sampel",
+        ok8 and type(res8) == "table" and res8.count == 5)
+    check("sample_addr mendeteksi 1 nilai berbeda",
+        ok8 and type(res8) == "table" and res8.distinct == 1,
+        ok8 and type(res8) == "table" and ("distinct=" .. res8.distinct) or "")
+    local ok9, res9 = pcall(mod.sample_addr, 0x1000, "int32", 0)
+    check("sample_addr menolak passes=0", ok9 and res9 == nil)
+    local ok10, res10 = pcall(mod.sample_addr, 0x1000, "int32", 9999)
+    check("sample_addr menolak passes=9999", ok10 and res10 == nil)
+
+    -- penghitung mutasi harus tetap 0
+    local c = mod.get_owh_call_count()
+    local mut = 0
+    for name, n in pairs(spy) do
+        if mod.forbidden[name] then mut = mut + n end
+    end
+    check("0 panggilan mutasi selama seluruh skenario", mut == 0,
+        "mutasi=" .. mut)
+    check("hanya panggilan read yang dieksekusi", c.executed == 6,
+        "executed=" .. c.executed)
 end
 
 --------------------------------------------------------------------------------

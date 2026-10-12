@@ -12,10 +12,10 @@ ada di repositori saat saya mulai hanyalah `README.md` berisi `# editor` (9 byte
 
 | Referensi | Status | Akibatnya |
 |---|---|---|
-| 1. `_docs.pluto` dari OWH | **Tidak diterima** | Saya tahu **nama** 25 fungsi `owh.*`, tapi **bukan** parameter/return-nya (lihat P2) |
+| 1. `_docs.pluto` dari OWH | **DITERIMA** (2026-10-12) | **P2 selesai** — seluruh API terdokumentasi. Lihat §2.2b |
 | 2. Source DX11Hook (`change_loot`, `loot_hook`) | **Tidak diterima** | Saya tidak bisa membaca baris kodenya |
 | 3. Screenshot hasil uji `.pluto` | **Tidak diterima** | — |
-| **Output konsol OWH-mu (dikirim 2026-10-12)** | **DITERIMA** | **Ini mengubah kesimpulan — lihat §2.0** |
+| **Output konsol OWH-mu** | **DITERIMA** (dua kali) | Menghasilkan katalog **33** anggota — lihat §2.0 & §2.2 |
 
 Konsekuensinya: **saya tidak akan menebak isi ketiga file tersebut.** Persyaratanmu
 nomor 3 melarangnya, dan itu juga satu-satunya cara yang jujur. Semua klaim di
@@ -151,24 +151,90 @@ OWH" **jauh lebih sempit** dari yang saya nyatakan sebelumnya. Skrip OWH pada
 dasarnya bisa melakukan **jenis operasi yang sama** — bedanya ia
 mendelegasikannya ke kode native di dalam OWH, bukan menulis asm sendiri.
 
-### 2.2 Yang MASIH belum terbukti (dan tidak akan saya karang)
+### 2.2 Katalog lengkap: 33 anggota (koreksi dari 25)
+
+Versi 1.1.0 mencatat **25** anggota. Itu **salah** — bukan karena OWH
+kekurangan fungsi, melainkan karena daftar awal saya **terpotong oleh batas
+cetak 25** pada `describe_table`. Deteksi "TIDAK TERCATAT" di v1.1.0 bekerja
+dengan benar dan menemukan 8 sisanya. Katalog yang benar, dikonfirmasi silang
+dengan `_docs.pluto`:
+
+| Kelas | Anggota | Jml |
+|---|---|---|
+| **read** | `read_float, read_double, read_int8, read_uint8, read_int16, read_uint16, read_int32, read_uint32, read_int64, read_uint64, read_bytes, read_string` | 12 |
+| **scan** | `base, player_base, find_pattern` | 3 |
+| **write** ⚠️ | `write_float, write_double, write_int8, write_uint8, write_int16, write_uint16, write_int32, write_uint32, write_int64, write_uint64, write_bytes, write_string, memcpy` | 13 |
+| **control** ⚠️ | `hook, unhook, protect, on_unload` | 4 |
+| **ui** ⚠️ | `msgbox` | 1 |
+
+### 2.2b P2 SELESAI — `_docs.pluto` sudah diterima
+
+Semua bentuk berikut **dikutip dari `_docs.pluto`**, bukan tebakan:
+
+```lua
+local id = owh.hook(addr, function(ctx) ... end)   -- -> id
+owh.unhook(id)
+owh.find_pattern(module, aob, offs)                -- -> alamat
+owh.base()                                         -- -> alamat dasar
+owh.player_base()                                  -- -> integer | nil (nil di luar misi)
+owh.read_int32(addr) / owh.write_int32(addr, val)  -- + semua lebar lain
+owh.read_bytes(addr, n)        -> tabel byte, 1-indexed
+owh.read_string(addr [,maxLen])-> string (default 4096)
+owh.memcpy(dst, src, n)        -> bool
+owh.protect(addr, size, flags) -> oldFlags | nil
+owh.msgbox(text [, title])     -> nil  (MEMBLOKIR)
+owh.on_unload(fn)              -> nil  (cleanup, LIFO, wajib top-level)
+```
+
+**Register yang tersedia di `ctx`** (menurut dokumen):
+`rcx, rdx, r8, r9` · `rax, r10, r11, rbx, rbp, rdi, rsi, r12, r13, r14, r15` ·
+`rsp` · `xmm0 … xmm15` (float, 32-bit rendah) · `ctx.skip = true`.
+
+### 2.2c Temuan penting: **`ctx.r12` itu 64-bit, dan tidak ada `ctx.r12d`**
+
+Ini menjawab langsung pertanyaan R12D-mu:
+
+1. OWH mengekspos **`ctx.r12`** — register **64-bit penuh**. Dokumen **tidak**
+   menyediakan `ctx.r12d`, `ctx.r8d`, `ctx.eax`, atau bentuk 32/16-bit lainnya.
+2. Jadi **"R12D" = 32-bit rendah dari `ctx.r12`** — harus dihitung, tidak bisa
+   diset langsung.
+3. **Bahaya konkret (berdasar A2 arsitektur):** menulis nilai 32-bit ke `r12`
+   akan **menolkan bit 32–63**. Kalau `r12` menyimpan **pointer 64-bit**,
+   memotongnya ke 32-bit **menghancurkan pointer itu**. Ini alasan teknis
+   mengapa G1/G2 wajib dibuktikan sebelum menyentuh register ini.
+4. Menulis 32-bit rendah tanpa merusak bit atas butuh **masking**:
+   `r12 = (r12 & 0xFFFFFFFF00000000) | (nilai32 & 0xFFFFFFFF)` — bukan sekadar
+   perkalian. Skrip menyediakan `M.low32()` dan `M.with_low32()` untuk
+   menghitungnya (aritmetika murni, tanpa menyentuh game).
+5. **Alternatif yang belum tersingkir:** `ctx.xmm0…xmm15` diekspos sebagai
+   float. Kalau jumlah loot disimpan sebagai **float**, yang relevan adalah
+   **xmm, bukan r12**. Dokumen tidak memberi tahu yang mana — harus dibuktikan.
+6. **Tidak ada dokumentasi flag CPU** (OF/CF/ZF). Padahal A3 menyebut `imul`
+   mengubah flag — jadi **tidak ada cara yang terdokumentasi** untuk
+   memulihkannya lewat API ini.
+
+> **Kesimpulan:** API-nya memberi **AKSES** ke `r12`, tetapi tidak memberi
+> **BUKTI** bahwa `r12` berisi jumlah loot. Akses ≠ pemahaman.
+
+### 2.2d Yang MASIH belum terbukti
 
 | ID | Yang belum diketahui | Mengapa tidak saya isi |
 |---|---|---|
-| **P2** | Bentuk parameter & nilai kembalian `owh.hook`, `owh.find_pattern`, `owh.protect` | Menulis `owh.hook(a, b, c)` dengan argumen tebakan = **mengarang API**. Kalau salah, kamu mengirim argumen ngawur ke dalam proses game — resep crash. Butuh `_docs.pluto`. |
-| **P3** | Signature AoB / offset fungsi loot, dan struktur data loot | Menulis pola byte = **mengarang alamat**. Persyaratanmu nomor 3 melarangnya, dan pola yang salah bisa mengenai fungsi yang sama sekali berbeda. |
-
-Keduanya bisa dijawab secara sah — P2 dari `_docs.pluto`, P3 dari reverse
-engineering yang bisa direproduksi. Keduanya **bukan** sesuatu yang bisa saya
-tebak dengan aman.
+| **P3** | Signature AoB / offset fungsi loot, dan struktur data loot | **`_docs.pluto` tidak menyebut loot sama sekali** — tidak ada fungsi loot, tidak ada offset loot, tidak ada AoB loot. Dokumen memberi **ALAT**-nya, bukan **ALAMAT**-nya. Mengarang pola byte melanggar persyaratanmu nomor 3, dan pola yang salah bisa mengenai fungsi yang sama sekali berbeda. |
 
 ### 2.3 Jadi, bisakah loot multiplier ×2–×5 dibuat?
 
-**Secara kemampuan: ya, primitifnya tersedia.** Kalau seseorang punya P2 dan
-P3, lintasannya tinggal merangkai `owh.find_pattern` → `owh.hook` → kalikan
-nilai di register/argumen → `owh.write_*` bila perlu. Saya tidak akan
-menyediakan rangkaian itu, dan saya juga tidak akan menyediakan pola maupun
-argumennya — itu persis bagian yang belum terbukti.
+**Secara kemampuan: ya, primitifnya tersedia dan sekarang terdokumentasi
+lengkap.** P2 sudah selesai; `owh.hook`, `find_pattern`, dan register `ctx`
+semuanya jelas. Kalau seseorang punya P3 (signature/offset loot), lintasannya
+tinggal merangkai `find_pattern` → `hook` → operasi pada `ctx.*`.
+
+**Saya tidak akan menyediakan rangkaian itu, dan terutama tidak akan
+menyediakan P3.** Yang hilang sekarang persis satu hal: **alamat/signature
+fungsi loot** — dan itu bukan sesuatu yang bisa ditebak dengan aman.
+
+Yang **bisa** saya bantu, dan ini jalur yang sah untuk menyelesaikan G1–G4:
+lihat §12.
 
 ### 2.4 Batas yang saya pegang, dan alasannya
 
@@ -484,19 +550,25 @@ ia tidak akan merusak sesi hook-mu.
    `owh.hook`, `owh.find_pattern`, `owh.write_*`, `owh.protect`, `owh.memcpy`.
    **Primitifnya ada.**
 2. **Tetapi saya tetap tidak membuatkan loot multiplier ×2–×5 yang bekerja.**
-   Alasannya sekarang **bukan** ketiadaan API, melainkan:
-   - parameter `owh.hook`/`owh.find_pattern` belum diketahui (**P2**), dan
-     menebaknya berarti mengarang API;
-   - signature/offset fungsi loot belum diketahui (**P3**), dan menebaknya
-     berarti mengarang alamat — dilarang oleh persyaratanmu nomor 3;
+   Alasannya sekarang **bukan** ketiadaan API dan **bukan** ketiadaan
+   dokumentasi — `_docs.pluto` sudah menjawab keduanya. Alasannya tinggal:
+   - **P3 belum terpecahkan**: `_docs.pluto` tidak menyebut loot sama sekali.
+     Tidak ada signature, offset, maupun struktur data loot di dokumen itu.
+     Mengarangnya dilarang oleh persyaratanmu nomor 3 — dan pola yang salah
+     bisa mengenai fungsi yang sama sekali berbeda;
+   - **G1–G4 belum terbukti**: tak ada bukti bahwa `ctx.r12` berisi jumlah
+     loot (apalagi dengan tidak adanya `ctx.r12d`), dan ada alternatif yang
+     belum tersingkir bahwa nilainya disimpan di `xmm` sebagai float;
    - dan terutama: **persyaratanmu nomor 7 melarangnya**, dan mengubah
      perolehan loot di game multiplayer live melanggar ToS dengan risiko ban
      yang penulis fitur aslinya sendiri peringatkan.
 3. **Yang dikirimkan adalah harness diagnostik read-only + simulator**, sesuai
-   alternatif yang kamu minta. Sebagai tambahan di v1.1.0, status read-only
-   sekarang **dibuktikan oleh kode, bukan klaim**: `safe_owh()` menolak 15
-   anggota terlarang, dan Bagian A1c menunjukkan 9 percobaan ditolak dengan
-   `dieksekusi = 0`. Teruji pula oleh Skenario 6 (host tiruan, 0 panggilan).
+   alternatif yang kamu minta, **ditambah probe baca** untuk meneliti loot
+   secara sah (§12). Status read-only **dibuktikan oleh kode, bukan klaim**:
+   `safe_owh()` menolak **18** anggota terlarang (13 write + 4 control + 1 ui),
+   dan Bagian A1c menunjukkan 18 percobaan ditolak dengan `dieksekusi = 0`.
+   Teruji pula oleh Skenario 6 (host tiruan, 0 panggilan) dan Skenario 7
+   (probe hidup sekalipun, mutasi tetap 0).
 3. **Skrip berhasil dimuat ≠ loot multiplier bekerja.** Ketiga status ini
    dipisahkan secara eksplisit di Bagian G1 setiap kali dijalankan:
    - (1) **RUNTIME** — skrip selesai dieksekusi: `true`
@@ -528,6 +600,51 @@ ia tidak akan merusak sesi hook-mu.
   nambah".
 - Semua ini adalah alasan tambahan mengapa batas yang saya ambil adalah
   diagnostik read-only.
+
+---
+
+## 12. JALUR YANG SAH: menyelesaikan G1–G4 dengan probe baca
+
+Ada perbedaan besar antara **memodifikasi** loot dan **meneliti** loot. Yang
+kedua itu sah, tidak mengubah apa pun, dan justru satu-satunya cara membuktikan
+klaim R12D-mu. Skrip v1.2.0 menyediakan alatnya:
+
+| Fungsi | Kegunaan | Kelas |
+|---|---|---|
+| `M.read_addr(addr, lebar)` | Baca satu alamat lewat `owh.read_*` yang sesuai | read |
+| `M.sample_addr(addr, lebar, n)` | Ambil n sampel; laporkan berapa nilai berbeda | read |
+| `M.find_addr(module, aob, offs)` | Pindai signature (argumen dari RE-mu) | scan |
+| `M.low32(v)` / `M.with_low32(full, baru)` | Aritmetika 32-bit rendah, murni hitungan | — |
+
+Semuanya **mati secara default** (`CFG.call_readonly_probes = false`) dan
+semuanya melewati `safe_owh()`, jadi kelas write/control/ui tetap mustahil
+diakses berapa pun nilai flag-nya.
+
+**Cara memakainya untuk menguji G1–G4** (alamat dari hasil RE-mu sendiri):
+
+```lua
+OWH_RESEARCH_NO_AUTORUN = true
+local L = dofile("owh_loot_research.pluto")
+L.CFG.call_readonly_probes = true
+
+local addr = 0x7FF000000000          -- <- WAJIB dari RE-mu. Skrip tidak
+                                     --    menyediakan, mencari, atau menebaknya.
+print(L.read_addr(addr, "int32"))    -- nil + alasan kalau gagal
+
+local s = L.sample_addr(addr, "int32", 60)
+print("nilai berbeda:", s.distinct)  -- 1 = statis, >1 = berubah saat misi
+```
+
+Uji yang bisa kamu lakukan dengannya:
+
+- **G1** — apakah nilai di alamat itu berkorelasi dengan jumlah yang kamu
+  lihat di HUD.
+- **G3** — pakai `sample_addr` sebelum dan sesudah satu pengambilan; hitung
+  jumlah transisi. Kalau transisinya bukan 1 per drop, titik itu bukan
+  kandidat yang benar.
+- **G4** — bandingkan nilai di HUD, layar hasil misi, dan profil setelah misi.
+
+Hasilnya bisa kamu bawa ke mana saja: itu data, bukan pelanggaran.
 
 ---
 

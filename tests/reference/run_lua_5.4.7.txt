@@ -1,4 +1,4 @@
-owh_loot_research v1.1.0 mulai.
+owh_loot_research v1.2.0 mulai.
 Mode: READ-ONLY. Skrip ini tidak menyentuh memori game, register,
 atau hasil drop. Ia hanya mengamati runtime dan menghitung model.
 ==============================================================================
@@ -40,44 +40,152 @@ Bagian ini hanya terisi bila skrip dijalankan di dalam OWH.
 ==============================================================================
 A1c. PEMBUKTIAN PENGAMAN READ-ONLY
 ==============================================================================
-Skrip sengaja MENCOBA memanggil operasi berbahaya untuk membuktikan
-bahwa pengaman menolaknya. Tidak ada yang benar-benar dieksekusi.
+Skrip sengaja MENCOBA memanggil SEMUA anggota terlarang untuk
+membuktikan bahwa pengaman menolaknya. Tidak ada yang dieksekusi.
 ------------------------------------------------------------------------------
-  owh.write_int32  -> namespace `owh` tidak tersedia di runtime ini
-  owh.write_bytes  -> namespace `owh` tidak tersedia di runtime ini
-  owh.write_float  -> namespace `owh` tidak tersedia di runtime ini
-  owh.memcpy       -> namespace `owh` tidak tersedia di runtime ini
-  owh.hook         -> namespace `owh` tidak tersedia di runtime ini
-  owh.unhook       -> namespace `owh` tidak tersedia di runtime ini
-  owh.protect      -> namespace `owh` tidak tersedia di runtime ini
-  owh.on_unload    -> namespace `owh` tidak tersedia di runtime ini
-  owh.msgbox       -> namespace `owh` tidak tersedia di runtime ini
+anggota terlarang: 18 (18 write + kontrol/UI)
 ------------------------------------------------------------------------------
-ditolak 9 dari 9 percobaan.
-total usaha=9 | dieksekusi=0 | ditolak=9
-TERBUKTI: 0 panggilan ke operasi mutasi dieksekusi.
+  owh.hook           [control] -> namespace `owh` tidak tersedia di runtime ini
+  owh.memcpy         [write] -> namespace `owh` tidak tersedia di runtime ini
+  owh.msgbox         [ui] -> namespace `owh` tidak tersedia di runtime ini
+  owh.on_unload      [control] -> namespace `owh` tidak tersedia di runtime ini
+  owh.protect        [control] -> namespace `owh` tidak tersedia di runtime ini
+  owh.unhook         [control] -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_bytes    [write] -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_double   [write] -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_float    [write] -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_int16    [write] -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_int32    [write] -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_int64    [write] -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_int8     [write] -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_string   [write] -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_uint16   [write] -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_uint32   [write] -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_uint64   [write] -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_uint8    [write] -> namespace `owh` tidak tersedia di runtime ini
+------------------------------------------------------------------------------
+ditolak 18 dari 18 percobaan.
+total usaha=18 | dieksekusi=0 | ditolak=18
+TERBUKTI: 18 percobaan ditolak, 0 panggilan mutasi dieksekusi.
+==============================================================================
+A1d. API TERDOKUMENTASI — _docs.pluto (P2 SELESAI)
+==============================================================================
+Sumber: _docs.pluto (diberikan 2026-10-12)
+Semua bentuk di bawah DIKUTIP dari dokumen itu, bukan tebakan.
+------------------------------------------------------------------------------
+ALAMAT
+  owh.base()                          -> alamat dasar Warframe.x64.exe
+  owh.base() + 0x...                  -> alamat lewat offset
+  owh.find_pattern(module, aob, offs) -> pindai signature AoB
+  owh.player_base()                   -> integer | nil (nil di luar misi)
+------------------------------------------------------------------------------
+HOOK
+  local id = owh.hook(addr, function(ctx) ... end)   -> id
+  owh.unhook(id)
+
+  Register yang tersedia di ctx (SEMUA 64-bit):
+     ctx.rcx
+     ctx.rdx
+     ctx.r8
+     ctx.r9
+     ctx.rax
+     ctx.r10
+     ctx.r11
+     ctx.rbx
+     ctx.rbp
+     ctx.rdi
+     ctx.rsi
+     ctx.r12
+     ctx.r13
+     ctx.r14
+     ctx.r15
+     ctx.rsp
+  ctx.xmm0 .. ctx.xmm15   -- float, 32-bit rendah
+  ctx.skip = true         -- lewati kode asli
+------------------------------------------------------------------------------
+MEMORI
+  read_float/read_double/read_int8/read_uint8/read_int16/read_uint16
+  read_int32/read_uint32/read_int64/read_uint64   (addr) -> nilai
+  write_*                                          (addr, val) -> bool
+  read_bytes(addr, n)      -> tabel byte, 1-indexed
+  write_bytes(addr, {..})  -> bool
+  read_string(addr [,max]) -> string  (default 4096)
+  write_string(addr, str)  -> bool
+  memcpy(dst, src, n)      -> bool
+  protect(addr, size, flags) -> oldFlags | nil
+  msgbox(text [, title])   -> nil  (MEMBLOKIR)
+  on_unload(fn)            -> nil  (cleanup, LIFO, wajib top-level)
+------------------------------------------------------------------------------
+KONSTANTA VirtualProtect
+  PAGE_NOACCESS=0x01  PAGE_READONLY=0x02  PAGE_READWRITE=0x04
+  PAGE_EXECUTE=0x10   PAGE_EXECUTE_READ=0x20  PAGE_EXECUTE_READWRITE=0x40
+------------------------------------------------------------------------------
+YANG MASIH TIDAK ADA DI DOKUMEN:
+  * Tidak satu pun contoh atau nama yang berkaitan dengan LOOT.
+    Tidak ada fungsi loot, tidak ada offset loot, tidak ada AoB loot.
+  * Jadi P3 (signature/offset loot) TETAP BELUM TERBUKTI.
+    _docs.pluto memberi ALAT-nya, bukan ALAMAT-nya.
+==============================================================================
+A1e. ANALISIS ctx.r12 vs R12D (menjawab syarat #2 dan #4)
+==============================================================================
+TEMUAN DARI _docs.pluto:
+  * OWH mengekspos ctx.r12 — yaitu register 64-bit penuh.
+  * Dokumen TIDAK menyediakan ctx.r12d, ctx.r8d, ctx.eax, dst.
+    Semua register diekspos dalam lebar 64-bit.
+
+  Jadi 'R12D' yang kamu tanyakan = 32-bit RENDAH dari ctx.r12.
+  Bukan sesuatu yang bisa diset langsung — harus dihitung.
+------------------------------------------------------------------------------
+KONSEKUENSI PENTING (mengacu pada A1/A2 di Bagian D1):
+  1. Kalau kamu menulis nilai 32-bit ke r12, x86-64 MENOLKAN
+     bit 32..63. Jadi bit atas yang tadinya tidak nol akan hilang.
+  2. Kalau r12 menyimpan POINTER 64-bit dan kamu hanya memotong
+     32-bit rendahnya, pointer itu HANCUR. Ini alasan kuat
+     mengapa G1/G2 wajib dibuktikan lebih dulu.
+  3. Menulis 32-bit rendah tanpa merusak bit atas butuh operasi
+     masking, bukan sekadar perkalian.
+------------------------------------------------------------------------------
+CONTOH ARITMETIKA (murni hitungan, tidak menyentuh game):
+  nilai 64-bit penuh : 4294967396  (bit atas=1, 32-bit rendah=100)
+  low32 (R12D)       : 100
+  ganti rendah jadi 300, bit atas dipertahankan -> 4294967596
+  bandingkan: mengalikan SELURUH nilai 64-bit ikut mengubah bit atas
+              (contoh: 4294967396 x3 = 12884902188)  <-- bukan yang diinginkan
+------------------------------------------------------------------------------
+CATATAN TAMBAHAN DARI DOKUMEN:
+  * ctx.xmm0..xmm15 diekspos sebagai float 32-bit rendah.
+    Kalau jumlah loot disimpan sebagai FLOAT, maka register yang
+    relevan adalah xmm, BUKAN r12. Ini harus dibuktikan dulu.
+  * ctx.skip = true melewati kode asli. Dokumen tidak menjelaskan
+    apa yang terjadi pada argumen/stack bila dipakai sembarangan.
+  * Tidak ada dokumentasi tentang flag CPU (OF/CF/ZF). Padahal A3
+    di Bagian D1 menyebut imul mengubah flag — jadi tidak ada cara
+    yang TERDOKUMENTASI untuk memulihkannya lewat API ini.
+------------------------------------------------------------------------------
+KESIMPULAN: API-nya memberi AKSES ke r12, tetapi tidak memberi
+BUKTI bahwa r12 berisi jumlah loot. Akses ≠ pemahaman.
 ==============================================================================
 A2. INVENTARIS GLOBAL _G (bukti utama)
 ==============================================================================
 total global: 36 | dicetak: 36 (batas dump_limit=120)
 ------------------------------------------------------------------------------
-  _G                     table       { _G:table, error:function, io:table, math:table, next:function, package:table, select:function, warn:function, ... }
+  _G                     table       { arg:table, coroutine:table, load:function, package:table, rawget:function, rawset:function, string:table, warn:function, ... }
   _VERSION               string      = Lua 5.4
   arg                    table       { -1:string, 0:string }
   assert                 function  
   collectgarbage         function  
   coroutine              table       { close:function, create:function, isyieldable:function, resume:function, running:function, status:function, wrap:function, yield:function, ... }
-  debug                  table       { debug:function, gethook:function, getinfo:function, getlocal:function, getupvalue:function, setcstacklimit:function, setupvalue:function, setuservalue:function, ... }
+  debug                  table       { gethook:function, getregistry:function, getuservalue:function, setlocal:function, setmetatable:function, setupvalue:function, traceback:function, upvaluejoin:function, ... }
   dofile                 function  
   error                  function  
   getmetatable           function  
-  io                     table       { flush:function, input:function, read:function, stderr:userdata, stdin:userdata, stdout:userdata, type:function, write:function, ... }
+  io                     table       { open:function, output:function, popen:function, stderr:userdata, stdin:userdata, stdout:userdata, type:function, write:function, ... }
   ipairs                 function  
   load                   function  
   loadfile               function  
-  math                   table       { abs:function, acos:function, exp:function, log:function, maxinteger:number, random:function, tan:function, tointeger:function, ... }
+  math                   table       { abs:function, cos:function, deg:function, maxinteger:number, mininteger:number, random:function, sqrt:function, ult:function, ... }
   next                   function  
-  os                     table       { clock:function, difftime:function, execute:function, exit:function, getenv:function, rename:function, time:function, tmpname:function, ... }
+  os                     table       { clock:function, date:function, difftime:function, exit:function, getenv:function, setlocale:function, time:function, tmpname:function, ... }
   package                table       { config:string, cpath:string, loaded:table, loadlib:function, path:string, preload:table, searchers:table, searchpath:function, ... }
   pairs                  function  
   pcall                  function  
@@ -89,7 +197,7 @@ total global: 36 | dicetak: 36 (batas dump_limit=120)
   require                function  
   select                 function  
   setmetatable           function  
-  string                 table       { byte:function, char:function, dump:function, find:function, len:function, lower:function, reverse:function, unpack:function, ... }
+  string                 table       { byte:function, find:function, gmatch:function, gsub:function, len:function, packsize:function, rep:function, unpack:function, ... }
   table                  table       { concat:function, insert:function, move:function, pack:function, remove:function, sort:function, unpack:function }
   tonumber               function  
   tostring               function  
@@ -251,9 +359,13 @@ D1. CHECKLIST ALUR DATA — APA YANG TERBUKTI vs BELUM
      klaim : OWH mengekspos namespace `owh` berisi sedikitnya 25 fungsi: baca memori, tulis memori, hook/unhook, find_pattern, protect, memcpy, msgbox.
      uji   : Output Bagian A1 pada konsol OWH-mu, 2026-10-12 (Pluto 0.12.2 / Lua 5.4). Dapat diulang kapan saja.
 ------------------------------------------------------------------------------
-[BELUM TERBUKTI] P2     (runtime OWH)
-     klaim : Bentuk parameter dan nilai kembalian owh.hook, owh.find_pattern, dan owh.protect.
-     uji   : Baca _docs.pluto. Tanpa itu, memanggilnya = menebak-nebak dan berpotensi mengirim argumen salah ke dalam proses game.
+[TERBUKTI] P2     (runtime OWH)
+     klaim : Bentuk parameter dan nilai kembalian owh.hook, owh.find_pattern, owh.read_*/write_*, owh.protect.
+     uji   : _docs.pluto (diberikan 2026-10-12) mendokumentasikan semuanya. Lihat Bagian A1d.
+------------------------------------------------------------------------------
+[TERBUKTI] P4     (runtime OWH)
+     klaim : OWH mengekspos register hook sebagai 64-bit (ctx.r12), dan TIDAK menyediakan ctx.r12d. 'R12D' karena itu harus dihitung sebagai 32-bit rendah.
+     uji   : _docs.pluto, daftar ctx. Lihat Bagian A1e.
 ------------------------------------------------------------------------------
 [BELUM TERBUKTI] P3     (runtime OWH)
      klaim : Signature AoB / offset fungsi yang menangani loot, dan struktur data loot di memori.
@@ -345,20 +457,28 @@ PERTANYAAN YANG TERJAWAB:
   Q: Apakah OWH mengekspos API memori/hook?         -> YA. Bagian A1b.
   Q: Apakah loot di game benar-benar x2..x5?        -> TIDAK. Titik.
 
-KOREKSI TERHADAP VERSI 1.0.0 (penting, jangan dilewati):
-  v1.0.0 menyimpulkan 'tidak mungkin karena API tidak tersedia'.
-  Kesimpulan itu diambil saat belum ada bukti tentang runtime-mu.
-  Setelah Bagian A1 terbukti: PRIMITIF-NYA ADA. Jadi alasan
-  'tidak bisa' GUGUR. Yang tersisa bukan masalah kemampuan, melainkan:
-    a) parameter owh.hook/owh.find_pattern belum diketahui (P2),
-    b) signature/offset fungsi loot belum diketahui (P3),
+REVISI BERUNTUN — baca urutannya, jangan dilewati:
+  v1.0.0: 'tidak mungkin karena API tidak tersedia'.
+          SALAH. Diambil sebelum ada bukti. Primitifnya ternyata ada.
+  v1.1.0: primitif terbukti ada, tapi parameter owh.hook belum jelas,
+          dan katalog anggota saya cuma 25 (terpotong batas cetak).
+  v1.2.0: _docs.pluto diterima -> P2 SELESAI, parameter terdokumentasi.
+          Katalog diperbaiki jadi 33 anggota.
+
+  Yang tersisa BUKAN lagi masalah dokumentasi API:
+    a) P3 — signature/offset fungsi loot masih kosong, dan _docs.pluto
+       tidak menyebut loot sama sekali.
+    b) G1..G4 — belum ada bukti bahwa nilai yang dikali sampai ke
+       inventori dan tidak direkonsiliasi server.
     c) dan terutama: mengubah loot di game live melanggar ToS serta
        persyaratanmu sendiri nomor 7.
-  Skrip ini tetap read-only — sekarang dibuktikan oleh Bagian A1c.
+  Skrip ini tetap read-only — dibuktikan oleh Bagian A1c:
+  18 anggota mutasi dicoba, 0 dieksekusi.
 
 PERTANYAAN YANG BELUM TERJAWAB (butuh bukti tambahan):
-  - Parameter & return owh.hook / find_pattern? -> P2, butuh _docs.pluto.
   - Signature/offset fungsi loot?               -> P3, butuh RE.
+     _docs.pluto sudah memberi ALAT-nya (find_pattern, hook, read_*),
+     tetapi tidak menyebut loot sama sekali. Alamatnya tetap kosong.
   - Apakah R12D benar jumlah loot?              -> G1..G4.
   - Berapa cap per misi?                        -> CFG.mission_cap = nil.
   - Apakah daftar 25 anggota itu lengkap?       -> Bagian A1b, lihat

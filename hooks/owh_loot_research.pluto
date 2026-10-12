@@ -51,7 +51,7 @@
 --------------------------------------------------------------------------------
 
 local MODULE  = "owh_loot_research"
-local VERSION = "1.1.0"
+local VERSION = "1.2.0"
 
 local CFG = {
     multipliers     = { 2, 3, 4, 5 },   -- target konfigurasi yang diteliti
@@ -66,10 +66,11 @@ local CFG = {
     run_on_load     = true,             -- false = hanya muat modul, jangan auto-run
     log_sink_mode   = "auto",           -- "auto" | "print" | "stderr" | "all" | "none"
     member_limit    = 200,              -- maks member per tabel host yang dicetak
-    -- Memanggil getter yang DIDUGA tidak mengubah apa pun (owh.base,
-    -- owh.player_base). Tetap MATI secara default: ini hanyalah inferensi dari
-    -- namanya, belum pernah saya jalankan. Nyalakan sendiri bila kamu paham
-    -- risikonya dan sudah membaca _docs.pluto.
+    -- Mengizinkan pemanggilan kelas "read" dan "scan" SAJA (read_*,
+    -- find_pattern, base, player_base). Kelas write/control/ui tetap dilarang
+    -- tanpa kecuali, berapa pun nilai flag ini.
+    -- Tetap MATI secara default: tanpa alamat yang sah dari RE-mu, memanggil
+    -- read_* pada alamat ngawur bisa memicu crash pada proses game.
     call_readonly_probes = false,
 }
 
@@ -345,36 +346,59 @@ local HYPOTHESES = {
 
 local OWH_API = {
     -- { nama, kelas }
-    -- kelas "read"    : hanya membaca memori
-    -- kelas "write"   : MENGUBAH memori proses
-    -- kelas "control" : mengubah aliran eksekusi / proteksi memori / hook
-    -- kelas "meta"    : informasi, bukan akses memori
-    -- kelas "ui"      : antarmuka
-    { "base",          "meta"    },
-    { "find_pattern",  "meta"    },
-    { "hook",          "control" },
-    { "memcpy",        "write"   },
-    { "msgbox",        "ui"      },
-    { "on_unload",     "control" },
-    { "player_base",   "meta"    },
-    { "protect",       "control" },
-    { "read_bytes",    "read"    },
+    -- kelas "read"    : hanya membaca memori            -> diizinkan via flag
+    -- kelas "scan"    : informasi / pemindaian          -> diizinkan via flag
+    -- kelas "write"   : MENGUBAH memori proses          -> DILARANG
+    -- kelas "control" : aliran eksekusi / proteksi      -> DILARANG
+    -- kelas "ui"      : antarmuka                       -> DILARANG
+    --
+    -- SUMBER: _docs.pluto (diberikan 2026-10-12) + output konsol OWH.
+    -- 33 anggota. Versi 1.1.0 hanya mencatat 25 karena daftar awalnya
+    -- terpotong oleh batas cetak; 8 sisanya terdeteksi sebagai
+    -- "TIDAK TERCATAT" — deteksinya bekerja, katalognya yang kurang.
+
+    -- Pemindaian & informasi (3)
+    { "base",          "scan"    },  -- -> alamat dasar Warframe.x64.exe
+    { "player_base",   "scan"    },  -- -> integer | nil (nil di luar misi)
+    { "find_pattern",  "scan"    },  -- (module, aob, offs) -> alamat
+
+    -- Baca memori (12)
+    { "read_float",    "read"    },
     { "read_double",   "read"    },
-    { "read_int16",    "read"    },
-    { "read_int64",    "read"    },
-    { "read_string",   "read"    },
-    { "read_uint64",   "read"    },
+    { "read_int8",     "read"    },
     { "read_uint8",    "read"    },
-    { "unhook",        "control" },
-    { "write_bytes",   "write"   },
+    { "read_int16",    "read"    },
+    { "read_uint16",   "read"    },
+    { "read_int32",    "read"    },
+    { "read_uint32",   "read"    },
+    { "read_int64",    "read"    },
+    { "read_uint64",   "read"    },
+    { "read_bytes",    "read"    },  -- (addr, n) -> tabel byte, 1-indexed
+    { "read_string",   "read"    },  -- (addr [, maxLen]) -> string, default 4096
+
+    -- Tulis memori (13) — DILARANG
     { "write_float",   "write"   },
-    { "write_int16",   "write"   },
-    { "write_int32",   "write"   },
+    { "write_double",  "write"   },
     { "write_int8",    "write"   },
-    { "write_string",  "write"   },
-    { "write_uint16",  "write"   },
-    { "write_uint64",  "write"   },
     { "write_uint8",   "write"   },
+    { "write_int16",   "write"   },
+    { "write_uint16",  "write"   },
+    { "write_int32",   "write"   },
+    { "write_uint32",  "write"   },
+    { "write_int64",   "write"   },
+    { "write_uint64",  "write"   },
+    { "write_bytes",   "write"   },
+    { "write_string",  "write"   },
+    { "memcpy",        "write"   },
+
+    -- Kontrol (4) — DILARANG
+    { "hook",          "control" },  -- (addr, fn(ctx)) -> id
+    { "unhook",        "control" },  -- (id)
+    { "protect",       "control" },  -- (addr, size, flags) -> oldFlags | nil
+    { "on_unload",     "control" },  -- (fn) saat skrip di-unload
+
+    -- Antarmuka (1) — DILARANG
+    { "msgbox",        "ui"      },
 }
 
 -- Anggota yang TIDAK BOLEH disentuh skrip ini, dalam keadaan apa pun.
@@ -629,11 +653,18 @@ local function evidence_checklist()
                  .. "(Pluto 0.12.2 / Lua 5.4). Dapat diulang kapan saja.",
         },
         {
-            id = "P2", scope = "runtime OWH", status = "BELUM TERBUKTI",
+            id = "P2", scope = "runtime OWH", status = "TERBUKTI",
             claim = "Bentuk parameter dan nilai kembalian owh.hook, "
-                 .. "owh.find_pattern, dan owh.protect.",
-            test  = "Baca _docs.pluto. Tanpa itu, memanggilnya = menebak-nebak "
-                 .. "dan berpotensi mengirim argumen salah ke dalam proses game.",
+                 .. "owh.find_pattern, owh.read_*/write_*, owh.protect.",
+            test  = "_docs.pluto (diberikan 2026-10-12) mendokumentasikan "
+                 .. "semuanya. Lihat Bagian A1d.",
+        },
+        {
+            id = "P4", scope = "runtime OWH", status = "TERBUKTI",
+            claim = "OWH mengekspos register hook sebagai 64-bit (ctx.r12), "
+                 .. "dan TIDAK menyediakan ctx.r12d. "
+                 .. "'R12D' karena itu harus dihitung sebagai 32-bit rendah.",
+            test  = "_docs.pluto, daftar ctx. Lihat Bagian A1e.",
         },
         {
             id = "P3", scope = "runtime OWH", status = "BELUM TERBUKTI",
@@ -768,15 +799,15 @@ local function print_owh_capability()
             if     r.kind == "read"           then n_read  = n_read  + 1
             elseif r.kind == "write"          then n_write = n_write + 1
             elseif r.kind == "control"        then n_ctrl  = n_ctrl  + 1
-            elseif r.kind == "meta"           then n_meta  = n_meta  + 1
+            elseif r.kind == "scan"           then n_meta  = n_meta  + 1
             elseif r.kind == "ui"             then n_ui    = n_ui    + 1
             elseif r.kind == "TIDAK TERCATAT" then n_new   = n_new   + 1
             end
         end
     end
     rule()
-    log("ringkasan: read=%d  write=%d  control=%d  meta=%d  ui=%d  tidak-tercatat=%d",
-        n_read, n_write, n_ctrl, n_meta, n_ui, n_new)
+    log("ringkasan: read=%d  scan=%d  write=%d  control=%d  ui=%d  tidak-tercatat=%d",
+        n_read, n_meta, n_write, n_ctrl, n_ui, n_new)
     rule()
 
     log("VERDIKT KEMAMPUAN (jujur, tanpa dibuat-buat):")
@@ -802,32 +833,235 @@ local function print_owh_capability()
     log("    lihat fungsi safe_owh() dan Bagian A1c.")
 end
 
---- Pembuktian bahwa pengaman benar-benar bekerja: coba panggil operasi
+--- Pembuktian bahwa pengaman benar-benar bekerja: coba panggil SEMUA operasi
 --  terlarang, lalu tunjukkan bahwa semuanya ditolak.
 local function print_guard_proof()
     header("A1c. PEMBUKTIAN PENGAMAN READ-ONLY")
-    log("Skrip sengaja MENCOBA memanggil operasi berbahaya untuk membuktikan")
-    log("bahwa pengaman menolaknya. Tidak ada yang benar-benar dieksekusi.")
+    log("Skrip sengaja MENCOBA memanggil SEMUA anggota terlarang untuk")
+    log("membuktikan bahwa pengaman menolaknya. Tidak ada yang dieksekusi.")
     rule()
-    local attempts = {
-        "write_int32", "write_bytes", "write_float", "memcpy",
-        "hook", "unhook", "protect", "on_unload", "msgbox",
-    }
+    local attempts, n = {}, 0
+    for k in pairs(FORBIDDEN) do n = n + 1; attempts[n] = k end
+    table.sort(attempts)
+    log("anggota terlarang: %d (%d write + kontrol/UI)", n, n)
+    rule()
     local refused = 0
     for i = 1, #attempts do
         local ok, res = safe_owh(attempts[i], 0, 0)
         if not ok then refused = refused + 1 end
-        log("  owh.%-12s -> %s", attempts[i], tostr(res))
+        log("  owh.%-14s [%s] -> %s", attempts[i],
+            tostr(FORBIDDEN[attempts[i]]), tostr(res))
     end
     rule()
     log("ditolak %d dari %d percobaan.", refused, #attempts)
     log("total usaha=%d | dieksekusi=%d | ditolak=%d",
         OWH_CALLS.attempted, OWH_CALLS.executed, OWH_CALLS.refused)
-    if OWH_CALLS.executed > 0 then
+    if refused ~= #attempts then
         log("PERINGATAN: ada panggilan yang lolos. Matikan skrip ini sekarang.")
     else
-        log("TERBUKTI: 0 panggilan ke operasi mutasi dieksekusi.")
+        log("TERBUKTI: %d percobaan ditolak, 0 panggilan mutasi dieksekusi.",
+            refused)
     end
+end
+
+--------------------------------------------------------------------------------
+-- 3c. API YANG SUDAH TERDOKUMENTASI  —  P2 SELESAI
+--------------------------------------------------------------------------------
+-- Sumber: _docs.pluto, diberikan 2026-10-12. Semua bentuk di bawah ini
+-- dikutip dari dokumen itu, BUKAN tebakan.
+--------------------------------------------------------------------------------
+
+local DOCS_HOOK_CTX = {
+    "rcx", "rdx", "r8", "r9",                    -- argumen 1..4
+    "rax", "r10", "r11", "rbx", "rbp",
+    "rdi", "rsi", "r12", "r13", "r14", "r15",    -- register umum
+    "rsp",                                       -- rsp game di titik hook
+}
+
+local function print_documented_api()
+    header("A1d. API TERDOKUMENTASI — _docs.pluto (P2 SELESAI)")
+    log("Sumber: %s", "_docs.pluto (diberikan 2026-10-12)")
+    log("Semua bentuk di bawah DIKUTIP dari dokumen itu, bukan tebakan.")
+    rule()
+    log("ALAMAT")
+    log("  owh.base()                          -> alamat dasar Warframe.x64.exe")
+    log("  owh.base() + 0x...                  -> alamat lewat offset")
+    log("  owh.find_pattern(module, aob, offs) -> pindai signature AoB")
+    log("  owh.player_base()                   -> integer | nil (nil di luar misi)")
+    rule()
+    log("HOOK")
+    log("  local id = owh.hook(addr, function(ctx) ... end)   -> id")
+    log("  owh.unhook(id)")
+    log("")
+    log("  Register yang tersedia di ctx (SEMUA 64-bit):")
+    for i = 1, #DOCS_HOOK_CTX do
+        log("     ctx.%s", DOCS_HOOK_CTX[i])
+    end
+    log("  ctx.xmm0 .. ctx.xmm15   -- float, 32-bit rendah")
+    log("  ctx.skip = true         -- lewati kode asli")
+    rule()
+    log("MEMORI")
+    log("  read_float/read_double/read_int8/read_uint8/read_int16/read_uint16")
+    log("  read_int32/read_uint32/read_int64/read_uint64   (addr) -> nilai")
+    log("  write_*                                          (addr, val) -> bool")
+    log("  read_bytes(addr, n)      -> tabel byte, 1-indexed")
+    log("  write_bytes(addr, {..})  -> bool")
+    log("  read_string(addr [,max]) -> string  (default 4096)")
+    log("  write_string(addr, str)  -> bool")
+    log("  memcpy(dst, src, n)      -> bool")
+    log("  protect(addr, size, flags) -> oldFlags | nil")
+    log("  msgbox(text [, title])   -> nil  (MEMBLOKIR)")
+    log("  on_unload(fn)            -> nil  (cleanup, LIFO, wajib top-level)")
+    rule()
+    log("KONSTANTA VirtualProtect")
+    log("  PAGE_NOACCESS=0x01  PAGE_READONLY=0x02  PAGE_READWRITE=0x04")
+    log("  PAGE_EXECUTE=0x10   PAGE_EXECUTE_READ=0x20  PAGE_EXECUTE_READWRITE=0x40")
+    rule()
+    log("YANG MASIH TIDAK ADA DI DOKUMEN:")
+    log("  * Tidak satu pun contoh atau nama yang berkaitan dengan LOOT.")
+    log("    Tidak ada fungsi loot, tidak ada offset loot, tidak ada AoB loot.")
+    log("  * Jadi P3 (signature/offset loot) TETAP BELUM TERBUKTI.")
+    log("    _docs.pluto memberi ALAT-nya, bukan ALAMAT-nya.")
+end
+
+--------------------------------------------------------------------------------
+-- 3d. ANALISIS ctx.r12 vs R12D
+--------------------------------------------------------------------------------
+
+
+--- Mengambil 32-bit rendah dari nilai 64-bit (R12D dari R12).
+local function low32(v)
+    local n, err = toint(v)
+    if not n then return nil, err end
+    return n - math.floor(n / TWO_32) * TWO_32
+end
+
+--- Menggabungkan 32-bit rendah baru ke atas 32-bit yang sudah ada.
+--  Ini ARITMETIKA register, bukan kode hook — tidak ada alamat di sini.
+local function with_low32(full64, new32)
+    local f, err = toint(full64)
+    if not f then return nil, err end
+    local n, err2 = toint(new32)
+    if not n then return nil, err2 end
+    local high = f - (f - math.floor(f / TWO_32) * TWO_32)  -- 32-bit atas
+    local low  = n - math.floor(n / TWO_32) * TWO_32
+    return high + low
+end
+
+local function print_ctx_analysis()
+    header("A1e. ANALISIS ctx.r12 vs R12D (menjawab syarat #2 dan #4)")
+
+    log("TEMUAN DARI _docs.pluto:")
+    log("  * OWH mengekspos ctx.r12 — yaitu register 64-bit penuh.")
+    log("  * Dokumen TIDAK menyediakan ctx.r12d, ctx.r8d, ctx.eax, dst.")
+    log("    Semua register diekspos dalam lebar 64-bit.")
+    log("")
+    log("  Jadi 'R12D' yang kamu tanyakan = 32-bit RENDAH dari ctx.r12.")
+    log("  Bukan sesuatu yang bisa diset langsung — harus dihitung.")
+    rule()
+
+    log("KONSEKUENSI PENTING (mengacu pada A1/A2 di Bagian D1):")
+    log("  1. Kalau kamu menulis nilai 32-bit ke r12, x86-64 MENOLKAN")
+    log("     bit 32..63. Jadi bit atas yang tadinya tidak nol akan hilang.")
+    log("  2. Kalau r12 menyimpan POINTER 64-bit dan kamu hanya memotong")
+    log("     32-bit rendahnya, pointer itu HANCUR. Ini alasan kuat")
+    log("     mengapa G1/G2 wajib dibuktikan lebih dulu.")
+    log("  3. Menulis 32-bit rendah tanpa merusak bit atas butuh operasi")
+    log("     masking, bukan sekadar perkalian.")
+    rule()
+
+    local demo_full = 0x0000000100000064     -- contoh: bit atas = 1, bawah = 100
+    local demo_low  = low32(demo_full)
+    log("CONTOH ARITMETIKA (murni hitungan, tidak menyentuh game):")
+    log("  nilai 64-bit penuh : %d  (bit atas=1, 32-bit rendah=100)", demo_full)
+    log("  low32 (R12D)       : %s", tostr(demo_low))
+    local newv = with_low32(demo_full, 300)
+    log("  ganti rendah jadi 300, bit atas dipertahankan -> %s", tostr(newv))
+    log("  bandingkan: mengalikan SELURUH nilai 64-bit ikut mengubah bit atas")
+    log("              (contoh: %d x3 = %d)  <-- bukan yang diinginkan",
+        demo_full, demo_full * 3)
+    rule()
+
+    log("CATATAN TAMBAHAN DARI DOKUMEN:")
+    log("  * ctx.xmm0..xmm15 diekspos sebagai float 32-bit rendah.")
+    log("    Kalau jumlah loot disimpan sebagai FLOAT, maka register yang")
+    log("    relevan adalah xmm, BUKAN r12. Ini harus dibuktikan dulu.")
+    log("  * ctx.skip = true melewati kode asli. Dokumen tidak menjelaskan")
+    log("    apa yang terjadi pada argumen/stack bila dipakai sembarangan.")
+    log("  * Tidak ada dokumentasi tentang flag CPU (OF/CF/ZF). Padahal A3")
+    log("    di Bagian D1 menyebut imul mengubah flag — jadi tidak ada cara")
+    log("    yang TERDOKUMENTASI untuk memulihkannya lewat API ini.")
+    rule()
+    log("KESIMPULAN: API-nya memberi AKSES ke r12, tetapi tidak memberi")
+    log("BUKTI bahwa r12 berisi jumlah loot. Akses ≠ pemahaman.")
+end
+
+--------------------------------------------------------------------------------
+-- 3e. PROBE BACA (read-only) — dipakai untuk menguji G1..G4 secara sah
+--------------------------------------------------------------------------------
+
+--- Membaca memori HANYA lewat fungsi kelas "read".
+--  Alamat WAJIB diberikan pemanggil (hasil RE-mu sendiri). Skrip ini
+--  tidak pernah menyediakan, mencari, atau menebak alamat.
+local function read_addr(addr, width)
+    if not CFG.call_readonly_probes then
+        return nil, "probe baca dinonaktifkan (CFG.call_readonly_probes = false)"
+    end
+    local a, err = toint(addr)
+    if not a then return nil, err end
+    if a <= 0 then return nil, "alamat harus bilangan bulat positif" end
+
+    local fname = "read_" .. tostr(width or "int32")
+    local kind = nil
+    for i = 1, #OWH_API do
+        if OWH_API[i][1] == fname then kind = OWH_API[i][2] break end
+    end
+    if kind ~= "read" then
+        return nil, "lebar '" .. tostr(width) ..
+                    "' tidak dikenal. Pilih: int8/uint8/int16/uint16/" ..
+                    "int32/uint32/int64/uint64/float/double"
+    end
+    local ok, val = safe_owh(fname, a)
+    if not ok then return nil, val end
+    return val
+end
+
+--- Mengambil N sampel dari satu alamat untuk melihat apakah nilainya
+--  berubah — cara yang sah untuk menguji G3 (satu kali per kejadian).
+--  PERINGATAN: memblokir sebentar. Jangan dipakai di dalam callback hook.
+local function sample_addr(addr, width, passes)
+    local n, err = toint(passes or 10)
+    if not n then return nil, err end
+    if n < 1 or n > 600 then
+        return nil, "passes harus antara 1 dan 600"
+    end
+    local samples, seen, distinct = {}, {}, 0
+    for i = 1, n do
+        local v, e = read_addr(addr, width)
+        if v == nil then
+            return nil, "sampel " .. i .. " gagal: " .. tostr(e)
+        end
+        samples[i] = v
+        if seen[tostr(v)] == nil then
+            seen[tostr(v)] = true
+            distinct = distinct + 1
+        end
+    end
+    return { samples = samples, distinct = distinct, count = n }
+end
+
+--- Pindai signature — kelas "scan", tidak mengubah apa pun.
+--  Argumen (module, aob, offs) WAJIB dari hasil RE-mu sendiri.
+local function find_addr(module_name, aob, offs)
+    if not CFG.call_readonly_probes then
+        return nil, "pemindaian dinonaktifkan (CFG.call_readonly_probes = false)"
+    end
+    if type(module_name) ~= "string" or type(aob) ~= "string" then
+        return nil, "module dan aob harus berupa string"
+    end
+    local ok, res = safe_owh("find_pattern", module_name, aob, offs or 0)
+    if not ok then return nil, res end
+    return res
 end
 
 local function print_globals()
@@ -1146,6 +1380,13 @@ local M = {
     owh_inventory       = owh_inventory,
     safe_owh            = safe_owh,
     forbidden           = FORBIDDEN,
+
+    -- analisis register & probe baca
+    low32               = low32,
+    with_low32          = with_low32,
+    read_addr           = read_addr,
+    sample_addr         = sample_addr,
+    find_addr           = find_addr,
     get_owh_call_count  = function()
         return {
             attempted = OWH_CALLS.attempted,
@@ -1177,6 +1418,8 @@ function M.run()
         print_hypotheses()
         print_owh_capability()
         print_guard_proof()
+        print_documented_api()
+        print_ctx_analysis()
         print_globals()
         print_register_model()
         print_width_note()
@@ -1205,20 +1448,31 @@ function M.run()
     log("  Q: Apakah OWH mengekspos API memori/hook?         -> YA. Bagian A1b.")
     log("  Q: Apakah loot di game benar-benar x2..x5?        -> TIDAK. Titik.")
     log("")
-    log("KOREKSI TERHADAP VERSI 1.0.0 (penting, jangan dilewati):")
-    log("  v1.0.0 menyimpulkan 'tidak mungkin karena API tidak tersedia'.")
-    log("  Kesimpulan itu diambil saat belum ada bukti tentang runtime-mu.")
-    log("  Setelah Bagian A1 terbukti: PRIMITIF-NYA ADA. Jadi alasan")
-    log("  'tidak bisa' GUGUR. Yang tersisa bukan masalah kemampuan, melainkan:")
-    log("    a) parameter owh.hook/owh.find_pattern belum diketahui (P2),")
-    log("    b) signature/offset fungsi loot belum diketahui (P3),")
+    log("REVISI BERUNTUN — baca urutannya, jangan dilewati:")
+    log("  v1.0.0: 'tidak mungkin karena API tidak tersedia'.")
+    log("          SALAH. Diambil sebelum ada bukti. Primitifnya ternyata ada.")
+    log("  v1.1.0: primitif terbukti ada, tapi parameter owh.hook belum jelas,")
+    log("          dan katalog anggota saya cuma 25 (terpotong batas cetak).")
+    log("  v1.2.0: _docs.pluto diterima -> P2 SELESAI, parameter terdokumentasi.")
+    log("          Katalog diperbaiki jadi 33 anggota.")
+    log("")
+    log("  Yang tersisa BUKAN lagi masalah dokumentasi API:")
+    log("    a) P3 — signature/offset fungsi loot masih kosong, dan _docs.pluto")
+    log("       tidak menyebut loot sama sekali.")
+    log("    b) G1..G4 — belum ada bukti bahwa nilai yang dikali sampai ke")
+    log("       inventori dan tidak direkonsiliasi server.")
     log("    c) dan terutama: mengubah loot di game live melanggar ToS serta")
     log("       persyaratanmu sendiri nomor 7.")
-    log("  Skrip ini tetap read-only — sekarang dibuktikan oleh Bagian A1c.")
+    local n_forbidden = 0
+    for _ in pairs(FORBIDDEN) do n_forbidden = n_forbidden + 1 end
+    log("  Skrip ini tetap read-only — dibuktikan oleh Bagian A1c:")
+    log("  %d anggota mutasi dicoba, %d dieksekusi.", n_forbidden,
+        OWH_CALLS.executed)
     log("")
     log("PERTANYAAN YANG BELUM TERJAWAB (butuh bukti tambahan):")
-    log("  - Parameter & return owh.hook / find_pattern? -> P2, butuh _docs.pluto.")
     log("  - Signature/offset fungsi loot?               -> P3, butuh RE.")
+    log("     _docs.pluto sudah memberi ALAT-nya (find_pattern, hook, read_*),")
+    log("     tetapi tidak menyebut loot sama sekali. Alamatnya tetap kosong.")
     log("  - Apakah R12D benar jumlah loot?              -> G1..G4.")
     log("  - Berapa cap per misi?                        -> CFG.mission_cap = nil.")
     log("  - Apakah daftar 25 anggota itu lengkap?       -> Bagian A1b, lihat")
