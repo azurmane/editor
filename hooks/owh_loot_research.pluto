@@ -1,0 +1,987 @@
+--[==[
+================================================================================
+ owh_loot_research.pluto
+ Loot Multiplier RESEARCH HARNESS  —  READ-ONLY  —  v1.0.0
+ Target runtime : OWH (Warframe Helper) LuaVM / Pluto  (diverifikasi pada
+                  Pluto 0.13.1, basis Lua 5.5.1; ditulis dalam subset yang juga
+                  valid untuk Lua 5.1 s.d. 5.5)
+================================================================================
+
+ KONTRAK KEAMANAN (baca sebelum dipakai)
+ --------------------------------------------------------------------------------
+ Skrip ini TIDAK dan TIDAK AKAN:
+   [x] memasang hook apa pun (tidak ada MinHook/Detours/trampoline/jmp patch)
+   [x] menulis / membaca memori proses game
+   [x] memodifikasi register CPU (R12D, R8D, atau register lain)
+   [x] melakukan patch instruksi (imul, mov, nop, dll)
+   [x] mengubah hasil drop, jumlah loot, kredit, atau sumber daya aktual
+   [x] melewati / menonaktifkan mekanisme anti-cheat
+   [x] memanggil fungsi host yang tidak dikenal (hanya dicek keberadaannya)
+
+ Yang skrip ini LAKUKAN:
+   [o] Inventarisasi API: mendaftar global apa saja yang benar-benar tersedia
+       di runtime OWH (bukti, bukan tebakan).
+   [o] Pemodelan register 32-bit: mensimulasikan apa yang terjadi secara
+       matematis bila sebuah nilai di-imul dengan faktor 2..5, termasuk
+       overflow signed 32-bit.
+   [o] Simulator x2..x5: menghitung hasil perkalian kuantitas dan probabilitas
+       pada data drop sintetis yang kamu berikan sendiri.
+   [o] Checklist alur data R12D: klaim yang bisa difalsifikasi + eksperimen
+       yang dibutuhkan untuk membuktikannya.
+   [o] Self-test + demonstrasi penanganan error.
+
+ PENTING — PEMISAHAN STATUS (jangan dicampur):
+   (1) RUNTIME SUCCESS  = skrip dimuat & dieksekusi tanpa error.
+   (2) DIAGNOSTIC RESULT= angka/daftar yang dicetak skrip ini.
+   (3) GAMEPLAY CHANGE  = perubahan loot nyata di dalam game.
+   Skrip ini HANYA bisa memberikan (1) dan (2). Tidak ada satu baris pun di
+   sini yang menghasilkan (3), dan (1)+(2) BUKAN bukti dari (3).
+
+ Catatan sintaks: sengaja ditulis dalam subset Lua konservatif (tanpa goto,
+ tanpa operator bitwise, tanpa //, tanpa fitur Pluto-only) agar portabel lintas
+ VM. Semua akses ke fasilitas host dibungkus pcall + pemeriksaan type().
+================================================================================
+]==]
+
+--------------------------------------------------------------------------------
+-- 0. MODUL & KONFIGURASI
+--------------------------------------------------------------------------------
+
+local MODULE  = "owh_loot_research"
+local VERSION = "1.0.0"
+
+local CFG = {
+    multipliers     = { 2, 3, 4, 5 },   -- target konfigurasi yang diteliti
+    register_bits   = 32,               -- R12D = 32 bit  (R12W = 16, R12 = 64)
+    register_signed = true,             -- imul signed
+    mission_cap     = nil,              -- TIDAK DIKETAHUI. Isi hanya jika punya bukti.
+    dump_limit      = 120,              -- maks entri global yang dicetak
+    table_limit     = 60,               -- maks member per tabel yang dicetak
+    write_report    = false,            -- true = coba simpan log ke file teks
+    report_path     = "owh_loot_research.log",
+    run_selftest    = true,             -- jalankan self-test saat dimuat
+    run_on_load     = true,             -- false = hanya muat modul, jangan auto-run
+    log_sink_mode   = "auto",           -- "auto" | "print" | "stderr" | "all" | "none"
+}
+
+-- Konstanta arsitektur x86-64 (fakta Intel/AMD SDM, bukan tebakan game)
+local TWO_31 = 2147483648   -- 2^31
+local TWO_32 = 4294967296   -- 2^32
+
+--------------------------------------------------------------------------------
+-- 1. UTILITAS AMAN  (tidak pernah melempar error keluar)
+--------------------------------------------------------------------------------
+
+--- Menjalankan f dengan argumen apa pun; mengembalikan ok, hasil|pesan error.
+--  Dipakai untuk membungkus SEMUA pemanggilan yang tidak dijamin ada.
+local function try(f, ...)
+    if type(f) ~= "function" then
+        return false, "objek yang dipanggil bukan function (tipe: " .. type(f) .. ")"
+    end
+    return pcall(f, ...)
+end
+
+--- tostring yang tidak pernah error (userdata bisa punya __tostring yang error).
+local function tostr(v)
+    local ok, s = pcall(tostring, v)
+    if ok and type(s) == "string" then return s end
+    return "<" .. type(v) .. ":tidak-dapat-dikonversi>"
+end
+
+--- Mengambil environment CHUNK saat ini (bukan selalu _G).
+--  Pada VM tersemat, skrip sering dijalankan dengan env khusus; karena itu
+--  pembacaan flag tidak boleh mengasumsikan _G sebagai satu-satunya env.
+--  Urutan: _ENV (Lua 5.2+/Pluto) -> getfenv (Lua 5.1) -> _G.
+local function current_env()
+    if type(_ENV) == "table" then return _ENV end
+    if type(getfenv) == "function" then
+        local ok, e = pcall(getfenv, 1)
+        if ok and type(e) == "table" then return e end
+    end
+    return _G
+end
+
+--- Membaca sebuah flag lingkungan dari env chunk, lalu _G.
+local function read_flag(name)
+    local env = current_env()
+    if type(env) == "table" then
+        local v = rawget(env, name)
+        if v ~= nil then return v end
+    end
+    if type(_G) == "table" then return rawget(_G, name) end
+    return nil
+end
+
+--- Konversi aman ke number integer untuk keperluan format %d.
+local function toint(v)
+    local n = tonumber(v)
+    if n == nil then return nil, "nilai bukan angka: " .. tostr(v) end
+    if n ~= n then return nil, "nilai NaN" end
+    if n == math.huge or n == -math.huge then return nil, "nilai tak hingga" end
+    return math.floor(n)
+end
+
+--------------------------------------------------------------------------------
+-- 2. SISTEM LOG MULTI-SINK
+--    Skrip harus tetap berguna walau `print` tidak tersedia atau tidak terlihat.
+--------------------------------------------------------------------------------
+
+local LOG = {
+    buffer  = {},      -- selalu terisi; bisa dibaca lewat M.get_log()
+    max     = 2000,
+    sinks   = nil,     -- diisi lazy oleh init_sinks()
+}
+
+local function push_line(line)
+    if #LOG.buffer < LOG.max then
+        LOG.buffer[#LOG.buffer + 1] = line
+    end
+end
+
+--- Mendeteksi sink output yang BENAR-BENAR ada di runtime ini.
+--  Hanya memakai fasilitas yang lolos pemeriksaan type(); tidak ada asumsi.
+--
+--  Mode "auto" (default) memilih SATU sink agar tidak terjadi duplikasi baris:
+--  pada kebanyakan VM, print dan io.write keduanya berakhir di stdout, sehingga
+--  memakai keduanya membuat setiap baris tercetak dua kali.
+local function init_sinks()
+    if LOG.sinks then return LOG.sinks end
+    local mode   = CFG.log_sink_mode or "auto"
+    local sinks  = {}
+    local print_sink, err_sink = nil, nil
+
+    if type(print) == "function" then
+        print_sink = { name = "print", fn = function(s) print(s) end }
+    end
+
+    local ok, io_lib = pcall(function() return io end)
+    if ok and type(io_lib) == "table" then
+        local se = io_lib.stderr
+        if type(se) == "table" and type(se.write) == "function" then
+            err_sink = {
+                name = "io.stderr",
+                fn = function(s) pcall(function() se:write(s, "\n") end) end,
+            }
+        elseif type(io_lib.write) == "function" then
+            err_sink = {
+                name = "io.write",
+                fn = function(s) pcall(io_lib.write, s, "\n") end,
+            }
+        end
+    end
+
+    if mode == "none" then
+        -- hanya buffer
+    elseif mode == "print" then
+        if print_sink then sinks[#sinks + 1] = print_sink end
+    elseif mode == "stderr" then
+        if err_sink then sinks[#sinks + 1] = err_sink end
+    elseif mode == "all" then
+        if print_sink then sinks[#sinks + 1] = print_sink end
+        if err_sink   then sinks[#sinks + 1] = err_sink   end
+    else -- auto
+        if print_sink then
+            sinks[#sinks + 1] = print_sink
+        elseif err_sink then
+            sinks[#sinks + 1] = err_sink
+        end
+    end
+
+    LOG.sinks = sinks
+    return sinks
+end
+
+--- Mencetak satu baris ke semua sink yang tersedia. Tidak pernah melempar.
+local function log(fmt, ...)
+    local ok, line = pcall(string.format, fmt, ...)
+    if not ok then
+        -- string.format gagal atau tidak ada (mis. %d menerima non-integer,
+        -- atau host mencabut string.format) -> fallback aman.
+        -- Ambil argumen dulu ke tabel lokal: `...` tidak bisa dipakai di
+        -- dalam closure pada Lua, jadi tidak boleh diakses dari fungsi gsub.
+        local n, s = select("#", ...), tostring(fmt)
+        local args = {}
+        for i = 1, n do args[i] = tostr((select(i, ...))) end
+        if type(string) == "table" and type(string.gsub) == "function" then
+            -- Substitusi spesifier satu per satu agar baris tetap terbaca.
+            local idx = 0
+            line = string.gsub(s, "%%[-+ #0-9.]*[a-zA-Z%%]", function(spec)
+                if spec == "%%" then return "%" end
+                idx = idx + 1
+                if idx <= n then return args[idx] end
+                return spec
+            end)
+        else
+            -- Jalan terakhir: tempelkan argumen di belakang teks format.
+            line = s .. table.concat(args, " ")
+        end
+    end
+    push_line(line)
+    local sinks = init_sinks()
+    for i = 1, #sinks do
+        pcall(sinks[i].fn, line)
+    end
+    return line
+end
+
+local function rule(ch)
+    log(string.rep(ch or "-", 78))
+end
+
+local function header(title)
+    rule("=")
+    log("%s", title)
+    rule("=")
+end
+
+--------------------------------------------------------------------------------
+-- 3. BAGIAN A — INVENTARISASI API RUNTIME (SUMBER BUKTI SATU-SATUNYA)
+--------------------------------------------------------------------------------
+
+--- Info versi VM. `pluto_*` hanya dilaporkan bila benar-benar ada.
+local function detect_vm()
+    local vv = rawget(_G, "_VERSION")
+    local info = {
+        _VERSION = (type(vv) == "string") and vv or "tidak tersedia",
+        has_pluto_table = type(rawget(_G, "pluto")) == "table",
+        has_debug       = type(rawget(_G, "debug")) == "table",
+        has_io          = type(rawget(_G, "io")) == "table",
+        has_os          = type(rawget(_G, "os")) == "table",
+        has_string_fmt  = type(rawget(_G, "string")) == "table"
+                          and type(string.format) == "function",
+        has_pcall       = type(rawget(_G, "pcall")) == "function",
+        has_require     = type(rawget(_G, "require")) == "function",
+    }
+    -- Deteksi Pluto lewat fungsi khas (bukan menebak dari nama saja)
+    local pluto_markers = 0
+    local markers = { "pluto_class", "pluto_switch", "pluto_continue", "pluto_enum" }
+    for i = 1, #markers do
+        if rawget(_G, markers[i]) ~= nil then pluto_markers = pluto_markers + 1 end
+    end
+    info.pluto_marker_count = pluto_markers
+    return info
+end
+
+--- Mengembalikan daftar kunci _G yang terurut. Aman terhadap __pairs yang error.
+local function collect_globals(limit)
+    local keys = {}
+    local ok, err = pcall(function()
+        for k in pairs(_G) do
+            keys[#keys + 1] = k
+        end
+    end)
+    if not ok then
+        return {}, "iterasi _G gagal: " .. tostr(err)
+    end
+    table.sort(keys, function(a, b) return tostr(a) < tostr(b) end)
+    if limit and #keys > limit then
+        local trimmed = {}
+        for i = 1, limit do trimmed[i] = keys[i] end
+        return trimmed, nil, #keys
+    end
+    return keys, nil, #keys
+end
+
+--- Mendaftar member sebuah tabel sedalam 1 level.
+--  HANYA membaca; tidak ada pemanggilan fungsi, tidak ada akses metatable.
+local function describe_table(name, tbl, limit)
+    if type(tbl) ~= "table" then return nil end
+    local rows = {}
+    local ok, err = pcall(function()
+        for k, v in pairs(tbl) do
+            rows[#rows + 1] = { key = tostr(k), kind = type(v) }
+            if limit and #rows >= limit then break end
+        end
+    end)
+    if not ok then
+        return nil, "enumerasi " .. tostr(name) .. " gagal: " .. tostr(err)
+    end
+    table.sort(rows, function(a, b) return a.key < b.key end)
+    return rows
+end
+
+-- Daftar HIPOTESIS — ini BUKAN klaim bahwa nama-nama ini ada.
+-- Skrip hanya mengetes keberadaannya. Hasil cetakannya adalah satu-satunya
+-- bukti. Ganti daftar ini dengan nama asli dari _docs.pluto milikmu.
+local HYPOTHESES = {
+    { "OWH",         "namespace utama helper" },
+    { "owh",         "namespace utama (huruf kecil)" },
+    { "memory",      "akses memori" },
+    { "process",     "akses proses" },
+    { "hooks",       "manajemen hook" },
+    { "hook",        "pemasangan hook" },
+    { "game",        "state game" },
+    { "player",      "state pemain" },
+    { "loot",        "state loot" },
+    { "Log",         "logger host" },
+    { "console",     "konsol host" },
+}
+
+--- Mengetes hipotesis: ADA atau TIDAK ADA. Tidak pernah memanggil apa pun.
+local function probe_hypotheses()
+    local results = {}
+    for i = 1, #HYPOTHESES do
+        local name, note = HYPOTHESES[i][1], HYPOTHESES[i][2]
+        local v = rawget(_G, name)
+        local t = type(v)
+        local members = nil
+        if t == "table" then
+            local rows, err = describe_table(name, v, 25)
+            if rows and #rows > 0 then
+                local parts = {}
+                for j = 1, #rows do
+                    parts[#parts + 1] = rows[j].key .. ":" .. rows[j].kind
+                end
+                members = table.concat(parts, ", ")
+            elseif err then
+                members = "<enumerasi gagal>"
+            end
+        end
+        results[#results + 1] = {
+            name = name, note = note,
+            present = (v ~= nil), kind = t, members = members,
+        }
+    end
+    return results
+end
+
+--------------------------------------------------------------------------------
+-- 4. BAGIAN B — MODEL REGISTER 32-BIT (bukan memori game)
+--------------------------------------------------------------------------------
+
+--- Memotong angka ke lebar 32-bit signed, persis seperti yang terjadi bila
+--  nilai disimpan ke register 32-bit (mis. R12D) pada x86-64.
+--  Fakta arsitektur: operasi 32-bit pada x86-64 akan menolkan bit 32..63 dari
+--  register 64-bit induknya (zero-extend), sehingga R12D dan R12 bernilai sama
+--  selama nilainya positif dan < 2^31.
+local function wrap32(x)
+    local n, err = toint(x)
+    if not n then return nil, err end
+    n = n - math.floor(n / TWO_32) * TWO_32      -- modulo 2^32 -> [0, 2^32-1]
+    if n >= TWO_31 then n = n - TWO_32 end       -- -> signed [-2^31, 2^31-1]
+    return n
+end
+
+--- Meniru `imul r32, r32, imm` / `imul r32, [imm]` (signed 32-bit).
+--  Mengembalikan nilai terpotong + flag "wrapped" bila terjadi overflow.
+local function imul_r32(value, m)
+    local v, err = wrap32(value)
+    if not v then return nil, nil, err end
+    local mm, err2 = toint(m)
+    if not mm then return nil, nil, err2 end
+    if mm == 0 then return 0, false end
+    local product = v * mm
+    local truncated = wrap32(product)
+    return truncated, (product < -TWO_31 or product > TWO_31 - 1)
+end
+
+--- Nilai maksimum yang masih aman dikalikan m tanpa overflow signed 32-bit.
+local function overflow_threshold(m)
+    local mm, err = toint(m)
+    if not mm or mm == 0 then return nil, err or "multiplier nol" end
+    return math.floor((TWO_31 - 1) / math.abs(mm))
+end
+
+--- Meniru pembacaan 16-bit (R12W) dan 8-bit (R12B) untuk perbandingan.
+local function wrap16(x)
+    local n = wrap32(x); if not n then return nil end
+    n = n - math.floor(n / 65536) * 65536
+    if n >= 32768 then n = n - 65536 end
+    return n
+end
+
+--------------------------------------------------------------------------------
+-- 5. BAGIAN C — SIMULATOR x2..x5 (model matematika murni)
+--------------------------------------------------------------------------------
+
+-- Data contoh SINTETIS. Ini BUKAN data drop Warframe yang sesungguhnya.
+-- Ganti dengan hasil observasimu sendiri. Sengaja memakai nama generik agar
+-- tidak ada klaim palsu tentang nama item / rate drop asli.
+local SAMPLE_DROPS = {
+    { id = "DROP_A", amount = 100, chance = 1.00, note = "sintetis: selalu drop" },
+    { id = "DROP_B", amount =   1, chance = 0.25, note = "sintetis: jarang"     },
+    { id = "DROP_C", amount =  15, chance = 0.60, note = "sintetis: umum"       },
+    { id = "DROP_D", amount = 250, chance = 0.05, note = "sintetis: langka"     },
+}
+
+--- Memvalidasi satu entri drop. Mengembalikan true|false, pesan.
+local function validate_drop(d)
+    if type(d) ~= "table" then return false, "entri drop bukan tabel" end
+    local amt = tonumber(d.amount)
+    if amt == nil then return false, "field 'amount' wajib berupa angka" end
+    if amt < 0 then return false, "field 'amount' tidak boleh negatif" end
+    local ch = d.chance
+    if ch ~= nil then
+        ch = tonumber(ch)
+        if ch == nil then return false, "field 'chance' harus angka bila ada" end
+        if ch < 0 or ch > 1 then return false, "field 'chance' harus dalam [0,1]" end
+    end
+    return true, nil
+end
+
+--- Model 1: PERKALIAN KUANTITAS —yang dilakukan oleh sebuah imul pada register
+--  yang (diduga) memuat jumlah loot. amount' = amount * m, dengan pemotongan
+--  32-bit signed opsional dan clamp terhadap cap bila diketahui.
+local function sim_quantity(drop, m, use_reg_model, cap)
+    local ok, err = validate_drop(drop)
+    if not ok then return nil, err end
+    local amt = math.floor(tonumber(drop.amount))
+    local base, wrapped = amt, false
+    local result
+    if use_reg_model then
+        result, wrapped = imul_r32(amt, m)
+    else
+        result = amt * m
+    end
+    if not result then return nil, "kegagalan aritmetika pada model register" end
+    local capped = false
+    if type(cap) == "number" and result > cap then
+        result, capped = cap, true
+    end
+    return {
+        id = drop.id, base = base, multiplier = m, result = result,
+        wrapped = wrapped, capped = capped,
+    }
+end
+
+--- Model 2: PERKALIAN PELUANG — operasi yang BERBEDA secara fundamental.
+--  Menggandakan *chance* bukan *amount*: P(>=1 sukses dalam m kesempatan).
+--  Dipakai untuk menunjukkan bahwa "loot multiplier" adalah istilah ambigu.
+local function sim_chance(drop, m)
+    local ok, err = validate_drop(drop)
+    if not ok then return nil, err end
+    local p = tonumber(drop.chance) or 1.0
+    -- Catatan portabilitas: math.pow DIHAPUS di Lua 5.3+, jadi dipakai
+    -- operator pangkat `^` yang valid di Lua 5.1 s.d. 5.5 dan Pluto.
+    local p_any = 1 - ((1 - p) ^ m)          -- P(minimal satu) dalam m percobaan
+    if p_any < 0 then p_any = 0 end
+    if p_any > 1 then p_any = 1 end
+    return { id = drop.id, p_base = p, multiplier = m, p_any = p_any }
+end
+
+--- Nilai harapan (expected value) per drop dan total untuk N kejadian.
+local function expected_value(drop, m, trials)
+    local ok, err = validate_drop(drop)
+    if not ok then return nil, err end
+    local amt = tonumber(drop.amount)
+    local p   = tonumber(drop.chance) or 1.0
+    trials = tonumber(trials) or 1
+    local per = p * amt * m
+    return { id = drop.id, per_event = per, over_n = per * trials, trials = trials }
+end
+
+--------------------------------------------------------------------------------
+-- 6. BAGIAN D — CHECKLIST ALUR DATA (R12D)
+--    Membedakan fakta arsitektur (terbukti) dari klaim spesifik game (belum).
+--------------------------------------------------------------------------------
+
+local function evidence_checklist()
+    return {
+        {
+            id = "A1", scope = "arsitektur", status = "TERBUKTI",
+            claim = "R12D adalah 32-bit rendah dari R12; R12W = 16-bit, R12B = 8-bit.",
+            test  = "Dokumentasi Intel/AMD SDM. Tidak perlu dibuktikan ulang.",
+        },
+        {
+            id = "A2", scope = "arsitektur", status = "TERBUKTI",
+            claim = "Penulisan 32-bit ke register x86-64 menolkan bit 32..63, "
+                 .. "jadi imul pada R12D membuat R12 = zero-extend(R12D).",
+            test  = "Intel SDM Vol.1 §3.4.1.1 (64-bit mode register behavior).",
+        },
+        {
+            id = "A3", scope = "arsitektur", status = "TERBUKTI",
+            claim = "imul signed 32-bit overflow -> hasil terpotong 2^32 dan "
+                 .. "membalik tanda; flag OF/CF ikut berubah dan dapat mengubah "
+                 .. "percabangan (jo/jc) setelahnya.",
+            test  = "Intel SDM, instruksi IMUL. Dapat direproduksi di emulator.",
+        },
+        {
+            id = "G1", scope = "game", status = "BELUM TERBUKTI",
+            claim = "Pada titik hook tersebut, R12D berisi JUMLAH LOOT.",
+            test  = "Telusuri instruksi yang MENULIS R12D sebelum titik hook "
+                 .. "(backward slice). Bila sumbernya bukan argumen/field jumlah "
+                 .. "loot, klaim ini gugur.",
+        },
+        {
+            id = "G2", scope = "game", status = "BELUM TERBUKTI",
+            claim = "Nilai R12D di titik itu mengalir ke fungsi yang mengomit "
+                 .. "sumber daya (forward taint), tanpa konsumen lain di antaranya.",
+            test  = "Tandai nilai, lalu amati apakah ia sampai ke pembaruan "
+                 .. "inventori. Cek apakah R12 dipakai sebagai counter/pointer "
+                 .. "di antara titik hook dan commit.",
+        },
+        {
+            id = "G3", scope = "game", status = "BELUM TERBUKTI",
+            claim = "Titik hook dieksekusi tepat SATU KALI per kejadian drop "
+                 .. "(bukan per frame / per entitas / per tick).",
+            test  = "Pasang hit-counter pasif, bandingkan hit count dengan "
+                 .. "jumlah drop yang ter observe di layar.",
+        },
+        {
+            id = "G4", scope = "game", status = "BELUM TERBUKTI",
+            claim = "Nilai hasil perkalian tidak ditimpa, dibatasi (clamp), atau "
+                 .. "direkonsiliasi oleh sisi server sebelum akhir misi.",
+            test  = "Bandingkan jumlah di HUD, di layar hasil misi, dan di "
+                 .. "profil setelah misi. Selisih = ada rekonsiliasi.",
+        },
+        {
+            id = "G5", scope = "game", status = "BELUM TERBUKTI",
+            claim = "Faktor pengali 2..5 berada di bawah ambang deteksi/ban.",
+            test  = "Tidak dapat dibuktikan dari sisi klien. Ini soal kebijakan "
+                 .. "risiko, bukan soal teknis. Lihat catatan risiko.",
+        },
+    }
+end
+
+--------------------------------------------------------------------------------
+-- 7. BAGIAN E — LAPORAN
+--------------------------------------------------------------------------------
+
+local function print_vm_info()
+    header("A0. INFO RUNTIME")
+    local i = detect_vm()
+    log("versi _VERSION        : %s", i._VERSION)
+    log("tabel `pluto` ada     : %s", tostr(i.has_pluto_table))
+    log("penanda khusus Pluto  : %d", i.pluto_marker_count)
+    log("debug / io / os       : %s / %s / %s",
+        tostr(i.has_debug), tostr(i.has_io), tostr(i.has_os))
+    log("string.format / pcall : %s / %s", tostr(i.has_string_fmt), tostr(i.has_pcall))
+    log("require               : %s", tostr(i.has_require))
+    log("sink output terdeteksi: %d", #init_sinks())
+    for k = 1, #LOG.sinks do
+        log("   - sink aktif: %s", LOG.sinks[k].name)
+    end
+end
+
+local function print_hypotheses()
+    header("A1. PROBE HIPOTESIS GLOBAL (bukan klaim API)")
+    log("Daftar ini HANYA dites keberadaannya. Tidak ada fungsi yang dipanggil.")
+    rule()
+    local r = probe_hypotheses()
+    for i = 1, #r do
+        if r[i].present then
+            log("[ADA]      %-10s (%s)", r[i].name, r[i].kind)
+            if r[i].members then log("            member: %s", r[i].members) end
+        else
+            log("[TIDAK ADA] %-9s  -- %s", r[i].name, r[i].note)
+        end
+    end
+    rule()
+    log("Kesimpulan: bila semua [TIDAK ADA], runtime ini TIDAK mengekspos API")
+    log("publik apa pun ke skrip. Temukan nama aslinya lewat dump _G di bawah.")
+end
+
+local function print_globals()
+    header("A2. INVENTARIS GLOBAL _G (bukti utama)")
+    local keys, err, total = collect_globals(CFG.dump_limit)
+    if err then
+        log("GAGAL membaca _G: %s", err)
+        return
+    end
+    log("total global: %d | dicetak: %d (batas dump_limit=%d)",
+        total or #keys, #keys, CFG.dump_limit)
+    rule()
+    for i = 1, #keys do
+        local k = keys[i]
+        local v, t = rawget(_G, k), "?"
+        local ok, vt = pcall(function() return type(rawget(_G, k)) end)
+        if ok then t = vt end
+        local extra = ""
+        if t == "table" then
+            local rows, e2 = describe_table(k, v, 8)
+            if rows and #rows > 0 then
+                local p = {}
+                for j = 1, #rows do p[#p + 1] = rows[j].key .. ":" .. rows[j].kind end
+                extra = "  { " .. table.concat(p, ", ") ..
+                        ((#rows >= 8) and ", ..." or "") .. " }"
+            elseif e2 then
+                extra = "  { <tidak dapat dienumerasi> }"
+            end
+        elseif t == "string" then
+            local ok2, sv = pcall(function() return rawget(_G, k) end)
+            if ok2 and type(sv) == "string" then
+                extra = "  = " .. string.sub(tostr(sv), 1, 40)
+            end
+        end
+        log("  %-22s %-10s%s", tostr(k), t, extra)
+    end
+    if total and total > #keys then
+        log("  ... %d entri lagi tidak dicetak (naikkan CFG.dump_limit).", total - #keys)
+    end
+    rule()
+    log("Salin daftar di atas. Itulah API yang SEBENARNYA tersedia di OWH-mu.")
+    log("Kirim ke saya dan saya akan menyesuaikan skrip ke nama yang nyata.")
+end
+
+local function print_register_model()
+    header("B1. MODEL imul PADA REGISTER 32-BIT (R12D) — untuk tiap x2..x5")
+    log("Catatan: ini ARITMETIKA, bukan pembacaan memori game.")
+    rule()
+    log("%-10s %-16s %-16s %-12s %s",
+        "input", "keluar (nil)", "32-bit signed", "overflow?", "ambang aman")
+    rule()
+    local samples = { 1, 15, 100, 250, 1000, 100000, 1000000000, 2147483647 }
+    for _, m in ipairs(CFG.multipliers) do
+        local thr = overflow_threshold(m)
+        log("-- multiplier x%d | nilai maks aman sebelum wrap: %s", m, tostr(thr))
+        for i = 1, #samples do
+            local v = samples[i]
+            local res, wrapped, err = imul_r32(v, m)
+            if err then
+                log("   %-10s ERROR: %s", tostr(v), err)
+            else
+                log("   %-10d %-16s %-16s %-12s %s",
+                    v, tostr(v * m), tostr(res), tostr(wrapped), tostr(thr))
+            end
+        end
+    end
+    rule()
+    log("BACA INI:")
+    log("  * Kolom 'keluar (nil)' = yang diharapkan pengguna awam.")
+    log("  * Kolom '32-bit signed'= yang SESUNGGUHNYA tersisa di R12D.")
+    log("  * Bila 'overflow?' = true, nilainya MEMBALIK TANDA atau terpotong.")
+    log("    Contoh: 1000000000 x3 = 3000000000 -> %s", tostr((imul_r32(1000000000, 3))))
+    log("  * imul juga MENGUBAH FLAG OF/CF. Bila setelah titik hook ada jo/jc,")
+    log("    cabang itu bisa berubah perilaku -> bug/crash, bukan cuma angka.")
+end
+
+local function print_width_note()
+    header("B2. LEBAR REGISTER: mengapa R12D tidak sama dengan R12W / R12B")
+    local v = 70000
+    log("nilai contoh: %d", v)
+    log("  sebagai R12D (32-bit signed) : %s", tostr(wrap32(v)))
+    log("  sebagai R12W (16-bit signed) : %s  <-- terpotong!", tostr(wrap16(v)))
+    log("  sebagai R12B ( 8-bit signed) : %s  <-- terpotong!",
+        tostr((function(x) x = wrap32(x); x = x - math.floor(x / 256) * 256
+            if x >= 128 then x = x - 256 end; return x end)(v)))
+    rule()
+    log("Implikasinya: menyebut 'R12' tanpa sufiks itu ambigu. R12D, R12W, R12B,")
+    log("dan R12 adalah empat hal berbeda dengan rentang berbeda. Klaim bahwa")
+    log("'R12D adalah jumlah loot' harus menyebut lebarnya secara eksplisit.")
+end
+
+local function print_simulator()
+    header("C1. SIMULATOR x2..x5 — MODEL KUANTITAS (apa yang imul lakukan)")
+    log("Data: SINTETIS (bukan drop rate Warframe yang asli). Ganti di SAMPLE_DROPS.")
+    rule()
+    log("%-8s %8s %5s %14s %10s %8s", "id", "base", "x", "hasil", "overflow", "cap?")
+    rule()
+    for _, m in ipairs(CFG.multipliers) do
+        for i = 1, #SAMPLE_DROPS do
+            local ok, res, msg = pcall(sim_quantity, SAMPLE_DROPS[i], m, true, CFG.mission_cap)
+            if ok and res then
+                log("%-8s %8d %5d %14s %10s %8s",
+                    tostr(res.id), res.base, m, tostr(res.result),
+                    tostr(res.wrapped), tostr(res.capped))
+            else
+                -- ok=false -> msg berisi error Lua; ok=true,res=nil -> msg=alasan
+                log("%-8s  ERROR: %s", SAMPLE_DROPS[i].id, tostr(ok and msg or res))
+            end
+        end
+        rule()
+    end
+end
+
+local function print_chance_model()
+    header("C2. SIMULATOR x2..x5 — MODEL PELUANG (operasi yang BERBEDA)")
+    log("Ini menunjukkan bahwa istilah 'loot multiplier' itu ambigu.")
+    log("imul pada register mengubah JUMLAH, bukan PELUANG.")
+    rule()
+    log("%-8s %10s %5s %14s", "id", "p dasar", "x", "P(>=1)")
+    rule()
+    for _, m in ipairs(CFG.multipliers) do
+        for i = 1, #SAMPLE_DROPS do
+            local ok, res, msg = pcall(sim_chance, SAMPLE_DROPS[i], m)
+            if ok and res then
+                log("%-8s %10.4f %5d %14.4f", tostr(res.id), res.p_base, m, res.p_any)
+            else
+                log("%-8s  ERROR: %s", SAMPLE_DROPS[i].id, tostr(ok and msg or res))
+            end
+        end
+        rule()
+    end
+    log("Perhatikan: menggandakan peluang TIDAK pernah memberi hasil linear")
+    log("(dibatasi 100%%), sedangkan menggandakan jumlah linear tapi bisa wrap.")
+end
+
+local function print_expected_value()
+    header("C3. NILAI HARAPAN (expected value) — 100 kejadian")
+    log("%-8s %5s %16s %16s", "id", "x", "per kejadian", "total x100")
+    rule()
+    for _, m in ipairs(CFG.multipliers) do
+        for i = 1, #SAMPLE_DROPS do
+            local ok, res, msg = pcall(expected_value, SAMPLE_DROPS[i], m, 100)
+            if ok and res then
+                log("%-8s %5d %16.2f %16.2f", tostr(res.id), m, res.per_event, res.over_n)
+            else
+                log("%-8s  ERROR: %s", SAMPLE_DROPS[i].id, tostr(ok and msg or res))
+            end
+        end
+        rule()
+    end
+end
+
+local function print_checklist()
+    header("D1. CHECKLIST ALUR DATA — APA YANG TERBUKTI vs BELUM")
+    local items = evidence_checklist()
+    for i = 1, #items do
+        log("[%s] %-6s (%s)", items[i].status, items[i].id, items[i].scope)
+        log("     klaim : %s", items[i].claim)
+        log("     uji   : %s", items[i].test)
+        rule()
+    end
+    log("Ringkasan: A* = fakta arsitektur CPU (terbukti, universal).")
+    log("           G* = klaim spesifik game (BELUM terbukti tanpa source/RE).")
+    log("Selama G1..G4 belum lulus uji, menyebut R12D sebagai 'jumlah loot'")
+    log("adalah ASUMSI, bukan fakta.")
+end
+
+--------------------------------------------------------------------------------
+-- 8. BAGIAN F — DEMONSTRASI PENANGANAN ERROR
+--------------------------------------------------------------------------------
+
+local function print_error_demos()
+    header("E1. DEMONSTRASI PENANGANAN ERROR (setiap kasus harus tertangkap)")
+    local cases = {
+        { name = "amount hilang (nil)",
+          fn = function() return sim_quantity({ id = "X" }, 3, true, nil) end },
+        { name = "amount bertipe string non-angka",
+          fn = function() return sim_quantity({ id = "X", amount = "abc" }, 3, true, nil) end },
+        { name = "amount negatif",
+          fn = function() return sim_quantity({ id = "X", amount = -5 }, 3, true, nil) end },
+        { name = "chance di luar [0,1]",
+          fn = function() return sim_chance({ id = "X", amount = 1, chance = 7 }) end },
+        { name = "multiplier = 0 (pembagi nol)",
+          fn = function() return overflow_threshold(0) end },
+        { name = "nilai NaN",
+          fn = function() local r, _, e = imul_r32(0 / 0, 2) return r, e end },
+        { name = "nilai tak hingga",
+          fn = function() return wrap32(math.huge) end },
+        { name = "drop bukan tabel",
+          fn = function() return sim_quantity("bukan-tabel", 2, true, nil) end },
+        { name = "memanggil nil sebagai fungsi",
+          fn = function() return try(nil) end },
+    }
+    local caught = 0
+    for i = 1, #cases do
+        local ok, res, msg = pcall(cases[i].fn)
+        -- Penanganan error dianggap benar bila SALAH SATU terjadi:
+        --   a) pcall menangkap error            -> ok = false
+        --   b) fungsi mengembalikan nil + pesan -> res = nil
+        --   c) fungsi mengembalikan false       -> kontrak "gagal" eksplisit
+        -- Kalau sebuah fungsi tetap mengembalikan nilai sukses pada input
+        -- yang rusak, itu lubang validasi dan harus terlihat di sini.
+        local handled = (not ok) or (res == nil) or (res == false)
+        if handled then caught = caught + 1 end
+        local detail
+        if not ok then
+            detail = "error ditangkap pcall: " .. tostr(res)
+        elseif res == nil then
+            detail = "nil + pesan: " .. tostr(msg)
+        elseif res == false then
+            detail = "nilai false: " .. tostr(msg)
+        else
+            detail = "MENGEMBALIKAN " .. tostr(res) .. " (validasi bocor!)"
+        end
+        log("  %-38s -> %-16s %s", cases[i].name,
+            handled and "TERTANGKAP" or "TIDAK TERTANGKAP", detail)
+    end
+    rule()
+    log("tertangkap %d dari %d kasus.", caught, #cases)
+    if caught < #cases then
+        log("PERINGATAN: ada kasus yang lolos. Perbaiki sebelum dipakai.")
+    end
+end
+
+--------------------------------------------------------------------------------
+-- 9. BAGIAN G — SELF-TEST
+--------------------------------------------------------------------------------
+
+local function run_selftests()
+    header("F1. SELF-TEST")
+    local pass, fail = 0, 0
+    local function check(name, got, want)
+        if got == want then
+            pass = pass + 1
+            log("  [OK]   %-46s = %s", name, tostr(got))
+        else
+            fail = fail + 1
+            log("  [GAGAL] %-45s = %s (diharapkan %s)", name, tostr(got), tostr(want))
+        end
+    end
+
+    check("wrap32(2147483647)", wrap32(2147483647), 2147483647)
+    check("wrap32(2147483648) -> wrap", wrap32(2147483648), -2147483648)
+    check("wrap32(-1)", wrap32(-1), -1)
+    check("wrap32(4294967296)", wrap32(4294967296), 0)
+    check("imul_r32(100, 3)", (imul_r32(100, 3)), 300)
+    check("imul_r32(1e9, 3) -> signed wrap", (imul_r32(1000000000, 3)), -1294967296)
+    check("imul_r32(2147483647, 2)", (imul_r32(2147483647, 2)), -2)
+    check("overflow_threshold(2)", overflow_threshold(2), 1073741823)
+    check("overflow_threshold(5)", overflow_threshold(5), 429496729)
+    check("wrap16(70000)", wrap16(70000), 4464)
+
+    -- model kuantitas
+    local q = sim_quantity({ id = "T", amount = 100 }, 2, false, nil)
+    check("sim_quantity 100 x2", q and q.result, 200)
+    local q2 = sim_quantity({ id = "T", amount = 100 }, 2, false, 150)
+    check("sim_quantity 100 x2 cap 150", q2 and q2.result, 150)
+    check("sim_quantity cap flag", q2 and q2.capped, true)
+    local q3, e3 = sim_quantity({ id = "T" }, 2, false, nil)
+    check("sim_quantity amount nil -> nil+pesan", q3, nil)
+    check("sim_quantity amount nil -> ada pesan", type(e3) == "string", true)
+
+    -- model peluang
+    local c = sim_chance({ id = "T", amount = 1, chance = 0.5 }, 2)
+    check("sim_chance 0.5 x2 = 0.75", c and (math.floor(c.p_any * 1000 + 0.5)), 750)
+    local c2 = sim_chance({ id = "T", amount = 1, chance = 0.5 }, 20)
+    check("sim_chance dibatasi 1.0", c2 and c2.p_any <= 1.0, true)
+
+    -- nilai harapan
+    local ev = expected_value({ id = "T", amount = 10, chance = 0.5 }, 4, 100)
+    check("EV = 0.5*10*4*100", ev and ev.over_n, 2000)
+
+    rule()
+    log("self-test: %d lulus, %d gagal", pass, fail)
+    return pass, fail
+end
+
+--------------------------------------------------------------------------------
+-- 10. TABEL PUBLIK MODUL
+--------------------------------------------------------------------------------
+
+local M = {
+    MODULE  = MODULE,
+    VERSION = VERSION,
+    CFG     = CFG,
+
+    -- util aman
+    try     = try,
+    tostr   = tostr,
+    toint   = toint,
+    log     = log,
+
+    -- model register
+    wrap32              = wrap32,
+    wrap16              = wrap16,
+    imul_r32            = imul_r32,
+    overflow_threshold  = overflow_threshold,
+
+    -- simulator
+    sim_quantity        = sim_quantity,
+    sim_chance          = sim_chance,
+    expected_value      = expected_value,
+    validate_drop       = validate_drop,
+    sample_drops        = SAMPLE_DROPS,
+
+    -- diagnostik
+    detect_vm           = detect_vm,
+    probe_hypotheses    = probe_hypotheses,
+    collect_globals     = collect_globals,
+    describe_table      = describe_table,
+    evidence_checklist  = evidence_checklist,
+    run_selftests       = run_selftests,
+
+    -- akses log
+    get_log             = function() return LOG.buffer end,
+    get_log_text        = function() return table.concat(LOG.buffer, "\n") end,
+}
+
+--------------------------------------------------------------------------------
+-- 11. ENTRY POINT
+--------------------------------------------------------------------------------
+
+--- Menjalankan seluruh rangkaian diagnostik. Aman dipanggil berulang kali.
+function M.run()
+    local t0 = (type(os) == "table" and type(os.clock) == "function")
+               and os.clock() or nil
+
+    log("%s v%s mulai.", MODULE, VERSION)
+    log("Mode: READ-ONLY. Skrip ini tidak menyentuh memori game, register,")
+    log("atau hasil drop. Ia hanya mengamati runtime dan menghitung model.")
+
+    local ok, err = try(function()
+        print_vm_info()
+        print_hypotheses()
+        print_globals()
+        print_register_model()
+        print_width_note()
+        print_simulator()
+        print_chance_model()
+        print_expected_value()
+        print_checklist()
+        print_error_demos()
+        if CFG.run_selftest then run_selftests() end
+    end)
+
+    if not ok then
+        -- Jangan pernah membiarkan error menghentikan pemuatan hook.
+        log("FATAL di dalam M.run(): %s", tostr(err))
+        log("Skrip tetap dimuat. Perbaiki bagian yang error, lalu Reload List.")
+    end
+
+    header("G1. PENUTUP — STATUS YANG HARUS DIBEDAKAN")
+    log("(1) RUNTIME   : skrip selesai dieksekusi = %s", tostr(ok))
+    log("(2) DIAGNOSTIK: lihat Bagian A0..F1 di atas (ini data, bukan aksi).")
+    log("(3) GAMEPLAY  : TIDAK ADA perubahan. Tidak ada loot yang berubah.")
+    log("")
+    log("PERTANYAAN YANG TERJAWAB:")
+    log("  Q: Bisakah OWH menjalankan skrip .pluto ini?      -> Lihat (1).")
+    log("  Q: Berapa hasil x2..x5 secara matematis?          -> Bagian C.")
+    log("  Q: Apakah loot di game benar-benar x2..x5?        -> TIDAK. Titik.")
+    log("")
+    log("PERTANYAAN YANG BELUM TERJAWAB (butuh bukti tambahan):")
+    log("  - Apa nama API OWH yang sesungguhnya?  -> Bagian A2, kirim dump-nya.")
+    log("  - Apakah R12D benar jumlah loot?       -> Bagian D1, item G1..G4.")
+    log("  - Berapa cap per misi?                 -> CFG.mission_cap = nil.")
+
+    if t0 and type(os.clock) == "function" then
+        log("selesai dalam %.3f detik.", os.clock() - t0)
+    end
+    return ok
+end
+
+--- Opsional: simpan log ke file teks biasa (BUKAN memori game).
+--  Defaultnya MATI. Nyalakan lewat CFG.write_report = true.
+function M.save_report(path)
+    if not CFG.write_report then
+        log("save_report: dilewati (CFG.write_report = false).")
+        return false, "dinonaktifkan oleh konfigurasi"
+    end
+    local ok, fh = pcall(io.open, path or CFG.report_path, "w")
+    if not ok or not fh then
+        log("save_report GAGAL membuka file: %s", tostr(fh))
+        return false, tostr(fh)
+    end
+    local ok2, err2 = pcall(function()
+        fh:write(M.get_log_text())
+        fh:write("\n")
+    end)
+    pcall(function() fh:close() end)
+    if not ok2 then
+        log("save_report GAGAL menulis: %s", tostr(err2))
+        return false, tostr(err2)
+    end
+    log("laporan disimpan ke: %s", path or CFG.report_path)
+    return true
+end
+
+--------------------------------------------------------------------------------
+-- 12. AUTO-RUN + PENANGANAN ERROR TINGKAT ATAS
+--------------------------------------------------------------------------------
+
+-- Bungkus auto-run agar skrip tidak pernah merusak sesi hook OWH.
+-- Cara mematikan auto-run (pilih salah satu):
+--   1) ubah CFG.run_on_load menjadi false di atas, atau
+--   2) set global OWH_RESEARCH_NO_AUTORUN = true sebelum skrip ini dimuat
+--      (berguna untuk memuatnya sebagai pustaka dari hook lain).
+if CFG.run_on_load ~= false and read_flag("OWH_RESEARCH_NO_AUTORUN") ~= true then
+    local ok, err = pcall(M.run)
+    if not ok then
+        -- Skenario terburuk: tetap beri tahu pengguna lewat jalur paling dasar.
+        pcall(print, "[owh_loot_research] ERROR saat auto-run: " .. tostr(err))
+        pcall(print, "[owh_loot_research] Skrip tidak melakukan apa pun ke game.")
+    end
+end
+
+return M

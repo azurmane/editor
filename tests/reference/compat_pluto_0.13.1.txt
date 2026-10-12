@@ -1,0 +1,1369 @@
+=
+PENGUJI PORABILITAS / KETAHANAN — hooks/owh_loot_research.pluto
+interpreter: Lua 5.5
+=
+
+[Skenario 1] Environment normal (semua pustaka tersedia)
+  [OK  ] skrip terkompilasi                                   
+owh_loot_research v1.0.0 mulai.
+Mode: READ-ONLY. Skrip ini tidak menyentuh memori game, register,
+atau hasil drop. Ia hanya mengamati runtime dan menghitung model.
+==============================================================================
+A0. INFO RUNTIME
+==============================================================================
+versi _VERSION        : Lua 5.5
+tabel `pluto` ada     : false
+penanda khusus Pluto  : 0
+debug / io / os       : true / true / true
+string.format / pcall : true / true
+require               : true
+sink output terdeteksi: 1
+   - sink aktif: print
+==============================================================================
+A1. PROBE HIPOTESIS GLOBAL (bukan klaim API)
+==============================================================================
+Daftar ini HANYA dites keberadaannya. Tidak ada fungsi yang dipanggil.
+------------------------------------------------------------------------------
+[TIDAK ADA] OWH        -- namespace utama helper
+[TIDAK ADA] owh        -- namespace utama (huruf kecil)
+[TIDAK ADA] memory     -- akses memori
+[TIDAK ADA] process    -- akses proses
+[TIDAK ADA] hooks      -- manajemen hook
+[TIDAK ADA] hook       -- pemasangan hook
+[TIDAK ADA] game       -- state game
+[TIDAK ADA] player     -- state pemain
+[TIDAK ADA] loot       -- state loot
+[TIDAK ADA] Log        -- logger host
+[TIDAK ADA] console    -- konsol host
+------------------------------------------------------------------------------
+Kesimpulan: bila semua [TIDAK ADA], runtime ini TIDAK mengekspos API
+publik apa pun ke skrip. Temukan nama aslinya lewat dump _G di bawah.
+==============================================================================
+A2. INVENTARIS GLOBAL _G (bukti utama)
+==============================================================================
+total global: 52 | dicetak: 52 (batas dump_limit=120)
+------------------------------------------------------------------------------
+  _G                     table       { assert:function, compareversions:function, next:function, pcall:function, rawlen:function, setmetatable:function, tonumber:function, utf8:table, ... }
+  _PVERSION              string      = Pluto 0.13.1
+  _VERSION               string      = Lua 5.5
+  arg                    table       { -1:string, 0:string }
+  assert                 function  
+  callonce               function  
+  collectgarbage         function  
+  compareversions        function  
+  coroutine              table       { close:function, create:function, isyieldable:function, resume:function, status:function, wrap:function, xresume:function, yield:function, ... }
+  debug                  table       { debug:function, getlocal:function, sethook:function, setlocal:function, setmetatable:function, setupvalue:function, traceback:function, upvaluejoin:function, ... }
+  dofile                 function  
+  dumpvar                function  
+  error                  function  
+  exception              table       { __construct:function, __name:string, __tostring:function }
+  exportvar              function  
+  getmetatable           function  
+  instanceof             function  
+  io                     table       { absolute:function, chmod:function, flush:function, listdir:function, open:function, relative:function, symlink:function, type:function, ... }
+  ipairs                 function  
+  load                   function  
+  loadfile               function  
+  math                   table       { atan:function, deg:function, floor:function, frexp:function, min:function, modf:function, rand:function, trunc:function, ... }
+  newuserdata            function  
+  next                   function  
+  os                     table       { date:function, difftime:function, millis:function, nanos:function, seconds:function, time:function, tmpname:function, unixseconds:function, ... }
+  package                table       { config:string, cpath:string, loaded:table, loadlib:function, path:string, preload:table, searchers:table, searchpath:function, ... }
+  pairs                  function  
+  pcall                  function  
+  print                  function  
+  range                  function  
+  rawequal               function  
+  rawget                 function  
+  rawlen                 function  
+  rawset                 function  
+  require                function  
+  sdiv                   function  
+  select                 function  
+  setmetatable           function  
+  smod                   function  
+  string                 table       { casefold:function, contains:function, dump:function, gsub:function, isalnum:function, span:function, strip:function, uformat:function, ... }
+  table                  table       { countvalues:function, filtered:function, find:function, findindex:function, foreach:function, modget:function, reordered:function, values:function, ... }
+  tonumber               function  
+  tostring               function  
+  type                   function  
+  udiv                   function  
+  umod                   function  
+  utf8                   table       { char:function, charpattern:string, codepoint:function, codes:function, len:function, offset:function }
+  utonumber              function  
+  utostring              function  
+  warn                   function  
+  wcall                  function  
+  xpcall                 function  
+------------------------------------------------------------------------------
+Salin daftar di atas. Itulah API yang SEBENARNYA tersedia di OWH-mu.
+Kirim ke saya dan saya akan menyesuaikan skrip ke nama yang nyata.
+==============================================================================
+B1. MODEL imul PADA REGISTER 32-BIT (R12D) — untuk tiap x2..x5
+==============================================================================
+Catatan: ini ARITMETIKA, bukan pembacaan memori game.
+------------------------------------------------------------------------------
+input      keluar (nil)     32-bit signed    overflow?    ambang aman
+------------------------------------------------------------------------------
+-- multiplier x2 | nilai maks aman sebelum wrap: 1073741823
+   1          2                2                false        1073741823
+   15         30               30               false        1073741823
+   100        200              200              false        1073741823
+   250        500              500              false        1073741823
+   1000       2000             2000             false        1073741823
+   100000     200000           200000           false        1073741823
+   1000000000 2000000000       2000000000       false        1073741823
+   2147483647 4294967294       -2               true         1073741823
+-- multiplier x3 | nilai maks aman sebelum wrap: 715827882
+   1          3                3                false        715827882
+   15         45               45               false        715827882
+   100        300              300              false        715827882
+   250        750              750              false        715827882
+   1000       3000             3000             false        715827882
+   100000     300000           300000           false        715827882
+   1000000000 3000000000       -1294967296      true         715827882
+   2147483647 6442450941       2147483645       true         715827882
+-- multiplier x4 | nilai maks aman sebelum wrap: 536870911
+   1          4                4                false        536870911
+   15         60               60               false        536870911
+   100        400              400              false        536870911
+   250        1000             1000             false        536870911
+   1000       4000             4000             false        536870911
+   100000     400000           400000           false        536870911
+   1000000000 4000000000       -294967296       true         536870911
+   2147483647 8589934588       -4               true         536870911
+-- multiplier x5 | nilai maks aman sebelum wrap: 429496729
+   1          5                5                false        429496729
+   15         75               75               false        429496729
+   100        500              500              false        429496729
+   250        1250             1250             false        429496729
+   1000       5000             5000             false        429496729
+   100000     500000           500000           false        429496729
+   1000000000 5000000000       705032704        true         429496729
+   2147483647 10737418235      2147483643       true         429496729
+------------------------------------------------------------------------------
+BACA INI:
+  * Kolom 'keluar (nil)' = yang diharapkan pengguna awam.
+  * Kolom '32-bit signed'= yang SESUNGGUHNYA tersisa di R12D.
+  * Bila 'overflow?' = true, nilainya MEMBALIK TANDA atau terpotong.
+    Contoh: 1000000000 x3 = 3000000000 -> -1294967296
+  * imul juga MENGUBAH FLAG OF/CF. Bila setelah titik hook ada jo/jc,
+    cabang itu bisa berubah perilaku -> bug/crash, bukan cuma angka.
+==============================================================================
+B2. LEBAR REGISTER: mengapa R12D tidak sama dengan R12W / R12B
+==============================================================================
+nilai contoh: 70000
+  sebagai R12D (32-bit signed) : 70000
+  sebagai R12W (16-bit signed) : 4464  <-- terpotong!
+  sebagai R12B ( 8-bit signed) : 112  <-- terpotong!
+------------------------------------------------------------------------------
+Implikasinya: menyebut 'R12' tanpa sufiks itu ambigu. R12D, R12W, R12B,
+dan R12 adalah empat hal berbeda dengan rentang berbeda. Klaim bahwa
+'R12D adalah jumlah loot' harus menyebut lebarnya secara eksplisit.
+==============================================================================
+C1. SIMULATOR x2..x5 — MODEL KUANTITAS (apa yang imul lakukan)
+==============================================================================
+Data: SINTETIS (bukan drop rate Warframe yang asli). Ganti di SAMPLE_DROPS.
+------------------------------------------------------------------------------
+id           base     x          hasil   overflow     cap?
+------------------------------------------------------------------------------
+DROP_A        100     2            200      false    false
+DROP_B          1     2              2      false    false
+DROP_C         15     2             30      false    false
+DROP_D        250     2            500      false    false
+------------------------------------------------------------------------------
+DROP_A        100     3            300      false    false
+DROP_B          1     3              3      false    false
+DROP_C         15     3             45      false    false
+DROP_D        250     3            750      false    false
+------------------------------------------------------------------------------
+DROP_A        100     4            400      false    false
+DROP_B          1     4              4      false    false
+DROP_C         15     4             60      false    false
+DROP_D        250     4           1000      false    false
+------------------------------------------------------------------------------
+DROP_A        100     5            500      false    false
+DROP_B          1     5              5      false    false
+DROP_C         15     5             75      false    false
+DROP_D        250     5           1250      false    false
+------------------------------------------------------------------------------
+==============================================================================
+C2. SIMULATOR x2..x5 — MODEL PELUANG (operasi yang BERBEDA)
+==============================================================================
+Ini menunjukkan bahwa istilah 'loot multiplier' itu ambigu.
+imul pada register mengubah JUMLAH, bukan PELUANG.
+------------------------------------------------------------------------------
+id          p dasar     x         P(>=1)
+------------------------------------------------------------------------------
+DROP_A       1.0000     2         1.0000
+DROP_B       0.2500     2         0.4375
+DROP_C       0.6000     2         0.8400
+DROP_D       0.0500     2         0.0975
+------------------------------------------------------------------------------
+DROP_A       1.0000     3         1.0000
+DROP_B       0.2500     3         0.5781
+DROP_C       0.6000     3         0.9360
+DROP_D       0.0500     3         0.1426
+------------------------------------------------------------------------------
+DROP_A       1.0000     4         1.0000
+DROP_B       0.2500     4         0.6836
+DROP_C       0.6000     4         0.9744
+DROP_D       0.0500     4         0.1855
+------------------------------------------------------------------------------
+DROP_A       1.0000     5         1.0000
+DROP_B       0.2500     5         0.7627
+DROP_C       0.6000     5         0.9898
+DROP_D       0.0500     5         0.2262
+------------------------------------------------------------------------------
+Perhatikan: menggandakan peluang TIDAK pernah memberi hasil linear
+(dibatasi 100%), sedangkan menggandakan jumlah linear tapi bisa wrap.
+==============================================================================
+C3. NILAI HARAPAN (expected value) — 100 kejadian
+==============================================================================
+id           x     per kejadian       total x100
+------------------------------------------------------------------------------
+DROP_A       2           200.00         20000.00
+DROP_B       2             0.50            50.00
+DROP_C       2            18.00          1800.00
+DROP_D       2            25.00          2500.00
+------------------------------------------------------------------------------
+DROP_A       3           300.00         30000.00
+DROP_B       3             0.75            75.00
+DROP_C       3            27.00          2700.00
+DROP_D       3            37.50          3750.00
+------------------------------------------------------------------------------
+DROP_A       4           400.00         40000.00
+DROP_B       4             1.00           100.00
+DROP_C       4            36.00          3600.00
+DROP_D       4            50.00          5000.00
+------------------------------------------------------------------------------
+DROP_A       5           500.00         50000.00
+DROP_B       5             1.25           125.00
+DROP_C       5            45.00          4500.00
+DROP_D       5            62.50          6250.00
+------------------------------------------------------------------------------
+==============================================================================
+D1. CHECKLIST ALUR DATA — APA YANG TERBUKTI vs BELUM
+==============================================================================
+[TERBUKTI] A1     (arsitektur)
+     klaim : R12D adalah 32-bit rendah dari R12; R12W = 16-bit, R12B = 8-bit.
+     uji   : Dokumentasi Intel/AMD SDM. Tidak perlu dibuktikan ulang.
+------------------------------------------------------------------------------
+[TERBUKTI] A2     (arsitektur)
+     klaim : Penulisan 32-bit ke register x86-64 menolkan bit 32..63, jadi imul pada R12D membuat R12 = zero-extend(R12D).
+     uji   : Intel SDM Vol.1 §3.4.1.1 (64-bit mode register behavior).
+------------------------------------------------------------------------------
+[TERBUKTI] A3     (arsitektur)
+     klaim : imul signed 32-bit overflow -> hasil terpotong 2^32 dan membalik tanda; flag OF/CF ikut berubah dan dapat mengubah percabangan (jo/jc) setelahnya.
+     uji   : Intel SDM, instruksi IMUL. Dapat direproduksi di emulator.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G1     (game)
+     klaim : Pada titik hook tersebut, R12D berisi JUMLAH LOOT.
+     uji   : Telusuri instruksi yang MENULIS R12D sebelum titik hook (backward slice). Bila sumbernya bukan argumen/field jumlah loot, klaim ini gugur.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G2     (game)
+     klaim : Nilai R12D di titik itu mengalir ke fungsi yang mengomit sumber daya (forward taint), tanpa konsumen lain di antaranya.
+     uji   : Tandai nilai, lalu amati apakah ia sampai ke pembaruan inventori. Cek apakah R12 dipakai sebagai counter/pointer di antara titik hook dan commit.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G3     (game)
+     klaim : Titik hook dieksekusi tepat SATU KALI per kejadian drop (bukan per frame / per entitas / per tick).
+     uji   : Pasang hit-counter pasif, bandingkan hit count dengan jumlah drop yang ter observe di layar.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G4     (game)
+     klaim : Nilai hasil perkalian tidak ditimpa, dibatasi (clamp), atau direkonsiliasi oleh sisi server sebelum akhir misi.
+     uji   : Bandingkan jumlah di HUD, di layar hasil misi, dan di profil setelah misi. Selisih = ada rekonsiliasi.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G5     (game)
+     klaim : Faktor pengali 2..5 berada di bawah ambang deteksi/ban.
+     uji   : Tidak dapat dibuktikan dari sisi klien. Ini soal kebijakan risiko, bukan soal teknis. Lihat catatan risiko.
+------------------------------------------------------------------------------
+Ringkasan: A* = fakta arsitektur CPU (terbukti, universal).
+           G* = klaim spesifik game (BELUM terbukti tanpa source/RE).
+Selama G1..G4 belum lulus uji, menyebut R12D sebagai 'jumlah loot'
+adalah ASUMSI, bukan fakta.
+==============================================================================
+E1. DEMONSTRASI PENANGANAN ERROR (setiap kasus harus tertangkap)
+==============================================================================
+  amount hilang (nil)                    -> TERTANGKAP       nil + pesan: field 'amount' wajib berupa angka
+  amount bertipe string non-angka        -> TERTANGKAP       nil + pesan: field 'amount' wajib berupa angka
+  amount negatif                         -> TERTANGKAP       nil + pesan: field 'amount' tidak boleh negatif
+  chance di luar [0,1]                   -> TERTANGKAP       nil + pesan: field 'chance' harus dalam [0,1]
+  multiplier = 0 (pembagi nol)           -> TERTANGKAP       nil + pesan: multiplier nol
+  nilai NaN                              -> TERTANGKAP       nil + pesan: nilai NaN
+  nilai tak hingga                       -> TERTANGKAP       nil + pesan: nilai tak hingga
+  drop bukan tabel                       -> TERTANGKAP       nil + pesan: entri drop bukan tabel
+  memanggil nil sebagai fungsi           -> TERTANGKAP       nilai false: objek yang dipanggil bukan function (tipe: nil)
+------------------------------------------------------------------------------
+tertangkap 9 dari 9 kasus.
+==============================================================================
+F1. SELF-TEST
+==============================================================================
+  [OK]   wrap32(2147483647)                             = 2147483647
+  [OK]   wrap32(2147483648) -> wrap                     = -2147483648
+  [OK]   wrap32(-1)                                     = -1
+  [OK]   wrap32(4294967296)                             = 0
+  [OK]   imul_r32(100, 3)                               = 300
+  [OK]   imul_r32(1e9, 3) -> signed wrap                = -1294967296
+  [OK]   imul_r32(2147483647, 2)                        = -2
+  [OK]   overflow_threshold(2)                          = 1073741823
+  [OK]   overflow_threshold(5)                          = 429496729
+  [OK]   wrap16(70000)                                  = 4464
+  [OK]   sim_quantity 100 x2                            = 200
+  [OK]   sim_quantity 100 x2 cap 150                    = 150
+  [OK]   sim_quantity cap flag                          = true
+  [OK]   sim_quantity amount nil -> nil+pesan           = nil
+  [OK]   sim_quantity amount nil -> ada pesan           = true
+  [OK]   sim_chance 0.5 x2 = 0.75                       = 750
+  [OK]   sim_chance dibatasi 1.0                        = true
+  [OK]   EV = 0.5*10*4*100                              = 2000.0
+------------------------------------------------------------------------------
+self-test: 18 lulus, 0 gagal
+==============================================================================
+G1. PENUTUP — STATUS YANG HARUS DIBEDAKAN
+==============================================================================
+(1) RUNTIME   : skrip selesai dieksekusi = true
+(2) DIAGNOSTIK: lihat Bagian A0..F1 di atas (ini data, bukan aksi).
+(3) GAMEPLAY  : TIDAK ADA perubahan. Tidak ada loot yang berubah.
+
+PERTANYAAN YANG TERJAWAB:
+  Q: Bisakah OWH menjalankan skrip .pluto ini?      -> Lihat (1).
+  Q: Berapa hasil x2..x5 secara matematis?          -> Bagian C.
+  Q: Apakah loot di game benar-benar x2..x5?        -> TIDAK. Titik.
+
+PERTANYAAN YANG BELUM TERJAWAB (butuh bukti tambahan):
+  - Apa nama API OWH yang sesungguhnya?  -> Bagian A2, kirim dump-nya.
+  - Apakah R12D benar jumlah loot?       -> Bagian D1, item G1..G4.
+  - Berapa cap per misi?                 -> CFG.mission_cap = nil.
+selesai dalam 0.003 detik.
+  [OK  ] eksekusi tanpa error                                 
+  [OK  ] modul dikembalikan                                   
+  [OK  ] M.VERSION terisi                                     1.0.0
+  [OK  ] api wrap32 ada                                       
+  [OK  ] api imul_r32 ada                                     
+  [OK  ] api sim_quantity ada                                 
+  [OK  ] api sim_chance ada                                   
+  [OK  ] api evidence_checklist ada                           
+  [OK  ] log terisi (>100 baris)                              #=330
+owh_loot_research v1.0.0 mulai.
+Mode: READ-ONLY. Skrip ini tidak menyentuh memori game, register,
+atau hasil drop. Ia hanya mengamati runtime dan menghitung model.
+==============================================================================
+A0. INFO RUNTIME
+==============================================================================
+versi _VERSION        : Lua 5.5
+tabel `pluto` ada     : false
+penanda khusus Pluto  : 0
+debug / io / os       : true / true / true
+string.format / pcall : true / true
+require               : true
+sink output terdeteksi: 1
+   - sink aktif: print
+==============================================================================
+A1. PROBE HIPOTESIS GLOBAL (bukan klaim API)
+==============================================================================
+Daftar ini HANYA dites keberadaannya. Tidak ada fungsi yang dipanggil.
+------------------------------------------------------------------------------
+[TIDAK ADA] OWH        -- namespace utama helper
+[TIDAK ADA] owh        -- namespace utama (huruf kecil)
+[TIDAK ADA] memory     -- akses memori
+[TIDAK ADA] process    -- akses proses
+[TIDAK ADA] hooks      -- manajemen hook
+[TIDAK ADA] hook       -- pemasangan hook
+[TIDAK ADA] game       -- state game
+[TIDAK ADA] player     -- state pemain
+[TIDAK ADA] loot       -- state loot
+[TIDAK ADA] Log        -- logger host
+[TIDAK ADA] console    -- konsol host
+------------------------------------------------------------------------------
+Kesimpulan: bila semua [TIDAK ADA], runtime ini TIDAK mengekspos API
+publik apa pun ke skrip. Temukan nama aslinya lewat dump _G di bawah.
+==============================================================================
+A2. INVENTARIS GLOBAL _G (bukti utama)
+==============================================================================
+total global: 52 | dicetak: 52 (batas dump_limit=120)
+------------------------------------------------------------------------------
+  _G                     table       { assert:function, compareversions:function, next:function, pcall:function, rawlen:function, setmetatable:function, tonumber:function, utf8:table, ... }
+  _PVERSION              string      = Pluto 0.13.1
+  _VERSION               string      = Lua 5.5
+  arg                    table       { -1:string, 0:string }
+  assert                 function  
+  callonce               function  
+  collectgarbage         function  
+  compareversions        function  
+  coroutine              table       { close:function, create:function, isyieldable:function, resume:function, status:function, wrap:function, xresume:function, yield:function, ... }
+  debug                  table       { debug:function, getlocal:function, sethook:function, setlocal:function, setmetatable:function, setupvalue:function, traceback:function, upvaluejoin:function, ... }
+  dofile                 function  
+  dumpvar                function  
+  error                  function  
+  exception              table       { __construct:function, __name:string, __tostring:function }
+  exportvar              function  
+  getmetatable           function  
+  instanceof             function  
+  io                     table       { absolute:function, chmod:function, flush:function, listdir:function, open:function, relative:function, symlink:function, type:function, ... }
+  ipairs                 function  
+  load                   function  
+  loadfile               function  
+  math                   table       { atan:function, deg:function, floor:function, frexp:function, min:function, modf:function, rand:function, trunc:function, ... }
+  newuserdata            function  
+  next                   function  
+  os                     table       { date:function, difftime:function, millis:function, nanos:function, seconds:function, time:function, tmpname:function, unixseconds:function, ... }
+  package                table       { config:string, cpath:string, loaded:table, loadlib:function, path:string, preload:table, searchers:table, searchpath:function, ... }
+  pairs                  function  
+  pcall                  function  
+  print                  function  
+  range                  function  
+  rawequal               function  
+  rawget                 function  
+  rawlen                 function  
+  rawset                 function  
+  require                function  
+  sdiv                   function  
+  select                 function  
+  setmetatable           function  
+  smod                   function  
+  string                 table       { casefold:function, contains:function, dump:function, gsub:function, isalnum:function, span:function, strip:function, uformat:function, ... }
+  table                  table       { countvalues:function, filtered:function, find:function, findindex:function, foreach:function, modget:function, reordered:function, values:function, ... }
+  tonumber               function  
+  tostring               function  
+  type                   function  
+  udiv                   function  
+  umod                   function  
+  utf8                   table       { char:function, charpattern:string, codepoint:function, codes:function, len:function, offset:function }
+  utonumber              function  
+  utostring              function  
+  warn                   function  
+  wcall                  function  
+  xpcall                 function  
+------------------------------------------------------------------------------
+Salin daftar di atas. Itulah API yang SEBENARNYA tersedia di OWH-mu.
+Kirim ke saya dan saya akan menyesuaikan skrip ke nama yang nyata.
+==============================================================================
+B1. MODEL imul PADA REGISTER 32-BIT (R12D) — untuk tiap x2..x5
+==============================================================================
+Catatan: ini ARITMETIKA, bukan pembacaan memori game.
+------------------------------------------------------------------------------
+input      keluar (nil)     32-bit signed    overflow?    ambang aman
+------------------------------------------------------------------------------
+-- multiplier x2 | nilai maks aman sebelum wrap: 1073741823
+   1          2                2                false        1073741823
+   15         30               30               false        1073741823
+   100        200              200              false        1073741823
+   250        500              500              false        1073741823
+   1000       2000             2000             false        1073741823
+   100000     200000           200000           false        1073741823
+   1000000000 2000000000       2000000000       false        1073741823
+   2147483647 4294967294       -2               true         1073741823
+-- multiplier x3 | nilai maks aman sebelum wrap: 715827882
+   1          3                3                false        715827882
+   15         45               45               false        715827882
+   100        300              300              false        715827882
+   250        750              750              false        715827882
+   1000       3000             3000             false        715827882
+   100000     300000           300000           false        715827882
+   1000000000 3000000000       -1294967296      true         715827882
+   2147483647 6442450941       2147483645       true         715827882
+-- multiplier x4 | nilai maks aman sebelum wrap: 536870911
+   1          4                4                false        536870911
+   15         60               60               false        536870911
+   100        400              400              false        536870911
+   250        1000             1000             false        536870911
+   1000       4000             4000             false        536870911
+   100000     400000           400000           false        536870911
+   1000000000 4000000000       -294967296       true         536870911
+   2147483647 8589934588       -4               true         536870911
+-- multiplier x5 | nilai maks aman sebelum wrap: 429496729
+   1          5                5                false        429496729
+   15         75               75               false        429496729
+   100        500              500              false        429496729
+   250        1250             1250             false        429496729
+   1000       5000             5000             false        429496729
+   100000     500000           500000           false        429496729
+   1000000000 5000000000       705032704        true         429496729
+   2147483647 10737418235      2147483643       true         429496729
+------------------------------------------------------------------------------
+BACA INI:
+  * Kolom 'keluar (nil)' = yang diharapkan pengguna awam.
+  * Kolom '32-bit signed'= yang SESUNGGUHNYA tersisa di R12D.
+  * Bila 'overflow?' = true, nilainya MEMBALIK TANDA atau terpotong.
+    Contoh: 1000000000 x3 = 3000000000 -> -1294967296
+  * imul juga MENGUBAH FLAG OF/CF. Bila setelah titik hook ada jo/jc,
+    cabang itu bisa berubah perilaku -> bug/crash, bukan cuma angka.
+==============================================================================
+B2. LEBAR REGISTER: mengapa R12D tidak sama dengan R12W / R12B
+==============================================================================
+nilai contoh: 70000
+  sebagai R12D (32-bit signed) : 70000
+  sebagai R12W (16-bit signed) : 4464  <-- terpotong!
+  sebagai R12B ( 8-bit signed) : 112  <-- terpotong!
+------------------------------------------------------------------------------
+Implikasinya: menyebut 'R12' tanpa sufiks itu ambigu. R12D, R12W, R12B,
+dan R12 adalah empat hal berbeda dengan rentang berbeda. Klaim bahwa
+'R12D adalah jumlah loot' harus menyebut lebarnya secara eksplisit.
+==============================================================================
+C1. SIMULATOR x2..x5 — MODEL KUANTITAS (apa yang imul lakukan)
+==============================================================================
+Data: SINTETIS (bukan drop rate Warframe yang asli). Ganti di SAMPLE_DROPS.
+------------------------------------------------------------------------------
+id           base     x          hasil   overflow     cap?
+------------------------------------------------------------------------------
+DROP_A        100     2            200      false    false
+DROP_B          1     2              2      false    false
+DROP_C         15     2             30      false    false
+DROP_D        250     2            500      false    false
+------------------------------------------------------------------------------
+DROP_A        100     3            300      false    false
+DROP_B          1     3              3      false    false
+DROP_C         15     3             45      false    false
+DROP_D        250     3            750      false    false
+------------------------------------------------------------------------------
+DROP_A        100     4            400      false    false
+DROP_B          1     4              4      false    false
+DROP_C         15     4             60      false    false
+DROP_D        250     4           1000      false    false
+------------------------------------------------------------------------------
+DROP_A        100     5            500      false    false
+DROP_B          1     5              5      false    false
+DROP_C         15     5             75      false    false
+DROP_D        250     5           1250      false    false
+------------------------------------------------------------------------------
+==============================================================================
+C2. SIMULATOR x2..x5 — MODEL PELUANG (operasi yang BERBEDA)
+==============================================================================
+Ini menunjukkan bahwa istilah 'loot multiplier' itu ambigu.
+imul pada register mengubah JUMLAH, bukan PELUANG.
+------------------------------------------------------------------------------
+id          p dasar     x         P(>=1)
+------------------------------------------------------------------------------
+DROP_A       1.0000     2         1.0000
+DROP_B       0.2500     2         0.4375
+DROP_C       0.6000     2         0.8400
+DROP_D       0.0500     2         0.0975
+------------------------------------------------------------------------------
+DROP_A       1.0000     3         1.0000
+DROP_B       0.2500     3         0.5781
+DROP_C       0.6000     3         0.9360
+DROP_D       0.0500     3         0.1426
+------------------------------------------------------------------------------
+DROP_A       1.0000     4         1.0000
+DROP_B       0.2500     4         0.6836
+DROP_C       0.6000     4         0.9744
+DROP_D       0.0500     4         0.1855
+------------------------------------------------------------------------------
+DROP_A       1.0000     5         1.0000
+DROP_B       0.2500     5         0.7627
+DROP_C       0.6000     5         0.9898
+DROP_D       0.0500     5         0.2262
+------------------------------------------------------------------------------
+Perhatikan: menggandakan peluang TIDAK pernah memberi hasil linear
+(dibatasi 100%), sedangkan menggandakan jumlah linear tapi bisa wrap.
+==============================================================================
+C3. NILAI HARAPAN (expected value) — 100 kejadian
+==============================================================================
+id           x     per kejadian       total x100
+------------------------------------------------------------------------------
+DROP_A       2           200.00         20000.00
+DROP_B       2             0.50            50.00
+DROP_C       2            18.00          1800.00
+DROP_D       2            25.00          2500.00
+------------------------------------------------------------------------------
+DROP_A       3           300.00         30000.00
+DROP_B       3             0.75            75.00
+DROP_C       3            27.00          2700.00
+DROP_D       3            37.50          3750.00
+------------------------------------------------------------------------------
+DROP_A       4           400.00         40000.00
+DROP_B       4             1.00           100.00
+DROP_C       4            36.00          3600.00
+DROP_D       4            50.00          5000.00
+------------------------------------------------------------------------------
+DROP_A       5           500.00         50000.00
+DROP_B       5             1.25           125.00
+DROP_C       5            45.00          4500.00
+DROP_D       5            62.50          6250.00
+------------------------------------------------------------------------------
+==============================================================================
+D1. CHECKLIST ALUR DATA — APA YANG TERBUKTI vs BELUM
+==============================================================================
+[TERBUKTI] A1     (arsitektur)
+     klaim : R12D adalah 32-bit rendah dari R12; R12W = 16-bit, R12B = 8-bit.
+     uji   : Dokumentasi Intel/AMD SDM. Tidak perlu dibuktikan ulang.
+------------------------------------------------------------------------------
+[TERBUKTI] A2     (arsitektur)
+     klaim : Penulisan 32-bit ke register x86-64 menolkan bit 32..63, jadi imul pada R12D membuat R12 = zero-extend(R12D).
+     uji   : Intel SDM Vol.1 §3.4.1.1 (64-bit mode register behavior).
+------------------------------------------------------------------------------
+[TERBUKTI] A3     (arsitektur)
+     klaim : imul signed 32-bit overflow -> hasil terpotong 2^32 dan membalik tanda; flag OF/CF ikut berubah dan dapat mengubah percabangan (jo/jc) setelahnya.
+     uji   : Intel SDM, instruksi IMUL. Dapat direproduksi di emulator.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G1     (game)
+     klaim : Pada titik hook tersebut, R12D berisi JUMLAH LOOT.
+     uji   : Telusuri instruksi yang MENULIS R12D sebelum titik hook (backward slice). Bila sumbernya bukan argumen/field jumlah loot, klaim ini gugur.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G2     (game)
+     klaim : Nilai R12D di titik itu mengalir ke fungsi yang mengomit sumber daya (forward taint), tanpa konsumen lain di antaranya.
+     uji   : Tandai nilai, lalu amati apakah ia sampai ke pembaruan inventori. Cek apakah R12 dipakai sebagai counter/pointer di antara titik hook dan commit.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G3     (game)
+     klaim : Titik hook dieksekusi tepat SATU KALI per kejadian drop (bukan per frame / per entitas / per tick).
+     uji   : Pasang hit-counter pasif, bandingkan hit count dengan jumlah drop yang ter observe di layar.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G4     (game)
+     klaim : Nilai hasil perkalian tidak ditimpa, dibatasi (clamp), atau direkonsiliasi oleh sisi server sebelum akhir misi.
+     uji   : Bandingkan jumlah di HUD, di layar hasil misi, dan di profil setelah misi. Selisih = ada rekonsiliasi.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G5     (game)
+     klaim : Faktor pengali 2..5 berada di bawah ambang deteksi/ban.
+     uji   : Tidak dapat dibuktikan dari sisi klien. Ini soal kebijakan risiko, bukan soal teknis. Lihat catatan risiko.
+------------------------------------------------------------------------------
+Ringkasan: A* = fakta arsitektur CPU (terbukti, universal).
+           G* = klaim spesifik game (BELUM terbukti tanpa source/RE).
+Selama G1..G4 belum lulus uji, menyebut R12D sebagai 'jumlah loot'
+adalah ASUMSI, bukan fakta.
+==============================================================================
+E1. DEMONSTRASI PENANGANAN ERROR (setiap kasus harus tertangkap)
+==============================================================================
+  amount hilang (nil)                    -> TERTANGKAP       nil + pesan: field 'amount' wajib berupa angka
+  amount bertipe string non-angka        -> TERTANGKAP       nil + pesan: field 'amount' wajib berupa angka
+  amount negatif                         -> TERTANGKAP       nil + pesan: field 'amount' tidak boleh negatif
+  chance di luar [0,1]                   -> TERTANGKAP       nil + pesan: field 'chance' harus dalam [0,1]
+  multiplier = 0 (pembagi nol)           -> TERTANGKAP       nil + pesan: multiplier nol
+  nilai NaN                              -> TERTANGKAP       nil + pesan: nilai NaN
+  nilai tak hingga                       -> TERTANGKAP       nil + pesan: nilai tak hingga
+  drop bukan tabel                       -> TERTANGKAP       nil + pesan: entri drop bukan tabel
+  memanggil nil sebagai fungsi           -> TERTANGKAP       nilai false: objek yang dipanggil bukan function (tipe: nil)
+------------------------------------------------------------------------------
+tertangkap 9 dari 9 kasus.
+==============================================================================
+F1. SELF-TEST
+==============================================================================
+  [OK]   wrap32(2147483647)                             = 2147483647
+  [OK]   wrap32(2147483648) -> wrap                     = -2147483648
+  [OK]   wrap32(-1)                                     = -1
+  [OK]   wrap32(4294967296)                             = 0
+  [OK]   imul_r32(100, 3)                               = 300
+  [OK]   imul_r32(1e9, 3) -> signed wrap                = -1294967296
+  [OK]   imul_r32(2147483647, 2)                        = -2
+  [OK]   overflow_threshold(2)                          = 1073741823
+  [OK]   overflow_threshold(5)                          = 429496729
+  [OK]   wrap16(70000)                                  = 4464
+  [OK]   sim_quantity 100 x2                            = 200
+  [OK]   sim_quantity 100 x2 cap 150                    = 150
+  [OK]   sim_quantity cap flag                          = true
+  [OK]   sim_quantity amount nil -> nil+pesan           = nil
+  [OK]   sim_quantity amount nil -> ada pesan           = true
+  [OK]   sim_chance 0.5 x2 = 0.75                       = 750
+  [OK]   sim_chance dibatasi 1.0                        = true
+  [OK]   EV = 0.5*10*4*100                              = 2000.0
+------------------------------------------------------------------------------
+self-test: 18 lulus, 0 gagal
+==============================================================================
+G1. PENUTUP — STATUS YANG HARUS DIBEDAKAN
+==============================================================================
+(1) RUNTIME   : skrip selesai dieksekusi = true
+(2) DIAGNOSTIK: lihat Bagian A0..F1 di atas (ini data, bukan aksi).
+(3) GAMEPLAY  : TIDAK ADA perubahan. Tidak ada loot yang berubah.
+
+PERTANYAAN YANG TERJAWAB:
+  Q: Bisakah OWH menjalankan skrip .pluto ini?      -> Lihat (1).
+  Q: Berapa hasil x2..x5 secara matematis?          -> Bagian C.
+  Q: Apakah loot di game benar-benar x2..x5?        -> TIDAK. Titik.
+
+PERTANYAAN YANG BELUM TERJAWAB (butuh bukti tambahan):
+  - Apa nama API OWH yang sesungguhnya?  -> Bagian A2, kirim dump-nya.
+  - Apakah R12D benar jumlah loot?       -> Bagian D1, item G1..G4.
+  - Berapa cap per misi?                 -> CFG.mission_cap = nil.
+selesai dalam 0.003 detik.
+  [OK  ] M.run() idempoten (panggil ke-2)                     true
+save_report: dilewati (CFG.write_report = false).
+  [OK  ] save_report ditolak saat dinonaktifkan               dinonaktifkan oleh konfigurasi
+  [OK  ] imul_r32(100,3) == 300                               
+  [OK  ] imul_r32(1e9,3) wrap -> -1294967296                  
+
+[Skenario 2] print + io DICABUT (konsol host tidak tersedia)
+  [OK  ] skrip terkompilasi                                   
+  [OK  ] eksekusi tanpa error walau tanpa print/io            
+  [OK  ] log internal tetap terisi (buffer jalan)             #=329
+  [OK  ] tidak ada sink output yang dipakai                   0 sink
+
+[Skenario 3] print + io + os + debug DICABUT
+  [OK  ] eksekusi tanpa error                                 
+  [OK  ] log internal tetap terisi                            #=328
+
+[Skenario 4] string.format DICABUT (log harus memakai fallback)
+owh_loot_research v1.0.0 mulai.
+Mode: READ-ONLY. Skrip ini tidak menyentuh memori game, register,
+atau hasil drop. Ia hanya mengamati runtime dan menghitung model.
+==============================================================================
+A0. INFO RUNTIME
+==============================================================================
+versi _VERSION        : Lua 5.5
+tabel `pluto` ada     : false
+penanda khusus Pluto  : 0
+debug / io / os       : true / true / true
+string.format / pcall : false / true
+require               : true
+sink output terdeteksi: 1
+   - sink aktif: io.write
+==============================================================================
+A1. PROBE HIPOTESIS GLOBAL (bukan klaim API)
+==============================================================================
+Daftar ini HANYA dites keberadaannya. Tidak ada fungsi yang dipanggil.
+------------------------------------------------------------------------------
+[TIDAK ADA] OWH  -- namespace utama helper
+[TIDAK ADA] owh  -- namespace utama (huruf kecil)
+[TIDAK ADA] memory  -- akses memori
+[TIDAK ADA] process  -- akses proses
+[TIDAK ADA] hooks  -- manajemen hook
+[TIDAK ADA] hook  -- pemasangan hook
+[TIDAK ADA] game  -- state game
+[TIDAK ADA] player  -- state pemain
+[TIDAK ADA] loot  -- state loot
+[TIDAK ADA] Log  -- logger host
+[TIDAK ADA] console  -- konsol host
+------------------------------------------------------------------------------
+Kesimpulan: bila semua [TIDAK ADA], runtime ini TIDAK mengekspos API
+publik apa pun ke skrip. Temukan nama aslinya lewat dump _G di bawah.
+==============================================================================
+A2. INVENTARIS GLOBAL _G (bukti utama)
+==============================================================================
+total global: 52 | dicetak: 52 (batas dump_limit=120)
+------------------------------------------------------------------------------
+  _G table  { assert:function, compareversions:function, next:function, pcall:function, rawlen:function, setmetatable:function, tonumber:function, utf8:table, ... }
+  _PVERSION string  = Pluto 0.13.1
+  _VERSION string  = Lua 5.5
+  arg table  { -1:string, 0:string }
+  assert function
+  callonce function
+  collectgarbage function
+  compareversions function
+  coroutine table  { close:function, create:function, isyieldable:function, resume:function, status:function, wrap:function, xresume:function, yield:function, ... }
+  debug table  { debug:function, getlocal:function, sethook:function, setlocal:function, setmetatable:function, setupvalue:function, traceback:function, upvaluejoin:function, ... }
+  dofile function
+  dumpvar function
+  error function
+  exception table  { __construct:function, __name:string, __tostring:function }
+  exportvar function
+  getmetatable function
+  instanceof function
+  io table  { absolute:function, chmod:function, flush:function, listdir:function, open:function, relative:function, symlink:function, type:function, ... }
+  ipairs function
+  load function
+  loadfile function
+  math table  { atan:function, deg:function, floor:function, frexp:function, min:function, modf:function, rand:function, trunc:function, ... }
+  newuserdata function
+  next function
+  os table  { date:function, difftime:function, millis:function, nanos:function, seconds:function, time:function, tmpname:function, unixseconds:function, ... }
+  package table  { config:string, cpath:string, loaded:table, loadlib:function, path:string, preload:table, searchers:table, searchpath:function, ... }
+  pairs function
+  pcall function
+  print function
+  range function
+  rawequal function
+  rawget function
+  rawlen function
+  rawset function
+  require function
+  sdiv function
+  select function
+  setmetatable function
+  smod function
+  string table  { casefold:function, contains:function, dump:function, gsub:function, isalnum:function, span:function, strip:function, uformat:function, ... }
+  table table  { countvalues:function, filtered:function, find:function, findindex:function, foreach:function, modget:function, reordered:function, values:function, ... }
+  tonumber function
+  tostring function
+  type function
+  udiv function
+  umod function
+  utf8 table  { char:function, charpattern:string, codepoint:function, codes:function, len:function, offset:function }
+  utonumber function
+  utostring function
+  warn function
+  wcall function
+  xpcall function
+------------------------------------------------------------------------------
+Salin daftar di atas. Itulah API yang SEBENARNYA tersedia di OWH-mu.
+Kirim ke saya dan saya akan menyesuaikan skrip ke nama yang nyata.
+==============================================================================
+B1. MODEL imul PADA REGISTER 32-BIT (R12D) — untuk tiap x2..x5
+==============================================================================
+Catatan: ini ARITMETIKA, bukan pembacaan memori game.
+------------------------------------------------------------------------------
+input keluar (nil) 32-bit signed overflow? ambang aman
+------------------------------------------------------------------------------
+-- multiplier x2 | nilai maks aman sebelum wrap: 1073741823
+   1 2 2 false 1073741823
+   15 30 30 false 1073741823
+   100 200 200 false 1073741823
+   250 500 500 false 1073741823
+   1000 2000 2000 false 1073741823
+   100000 200000 200000 false 1073741823
+   1000000000 2000000000 2000000000 false 1073741823
+   2147483647 4294967294 -2 true 1073741823
+-- multiplier x3 | nilai maks aman sebelum wrap: 715827882
+   1 3 3 false 715827882
+   15 45 45 false 715827882
+   100 300 300 false 715827882
+   250 750 750 false 715827882
+   1000 3000 3000 false 715827882
+   100000 300000 300000 false 715827882
+   1000000000 3000000000 -1294967296 true 715827882
+   2147483647 6442450941 2147483645 true 715827882
+-- multiplier x4 | nilai maks aman sebelum wrap: 536870911
+   1 4 4 false 536870911
+   15 60 60 false 536870911
+   100 400 400 false 536870911
+   250 1000 1000 false 536870911
+   1000 4000 4000 false 536870911
+   100000 400000 400000 false 536870911
+   1000000000 4000000000 -294967296 true 536870911
+   2147483647 8589934588 -4 true 536870911
+-- multiplier x5 | nilai maks aman sebelum wrap: 429496729
+   1 5 5 false 429496729
+   15 75 75 false 429496729
+   100 500 500 false 429496729
+   250 1250 1250 false 429496729
+   1000 5000 5000 false 429496729
+   100000 500000 500000 false 429496729
+   1000000000 5000000000 705032704 true 429496729
+   2147483647 10737418235 2147483643 true 429496729
+------------------------------------------------------------------------------
+BACA INI:
+  * Kolom 'keluar (nil)' = yang diharapkan pengguna awam.
+  * Kolom '32-bit signed'= yang SESUNGGUHNYA tersisa di R12D.
+  * Bila 'overflow?' = true, nilainya MEMBALIK TANDA atau terpotong.
+    Contoh: 1000000000 x3 = 3000000000 -> -1294967296
+  * imul juga MENGUBAH FLAG OF/CF. Bila setelah titik hook ada jo/jc,
+    cabang itu bisa berubah perilaku -> bug/crash, bukan cuma angka.
+==============================================================================
+B2. LEBAR REGISTER: mengapa R12D tidak sama dengan R12W / R12B
+==============================================================================
+nilai contoh: 70000
+  sebagai R12D (32-bit signed) : 70000
+  sebagai R12W (16-bit signed) : 4464  <-- terpotong!
+  sebagai R12B ( 8-bit signed) : 112  <-- terpotong!
+------------------------------------------------------------------------------
+Implikasinya: menyebut 'R12' tanpa sufiks itu ambigu. R12D, R12W, R12B,
+dan R12 adalah empat hal berbeda dengan rentang berbeda. Klaim bahwa
+'R12D adalah jumlah loot' harus menyebut lebarnya secara eksplisit.
+==============================================================================
+C1. SIMULATOR x2..x5 — MODEL KUANTITAS (apa yang imul lakukan)
+==============================================================================
+Data: SINTETIS (bukan drop rate Warframe yang asli). Ganti di SAMPLE_DROPS.
+------------------------------------------------------------------------------
+id base x hasil overflow cap?
+------------------------------------------------------------------------------
+DROP_A 100 2 200 false false
+DROP_B 1 2 2 false false
+DROP_C 15 2 30 false false
+DROP_D 250 2 500 false false
+------------------------------------------------------------------------------
+DROP_A 100 3 300 false false
+DROP_B 1 3 3 false false
+DROP_C 15 3 45 false false
+DROP_D 250 3 750 false false
+------------------------------------------------------------------------------
+DROP_A 100 4 400 false false
+DROP_B 1 4 4 false false
+DROP_C 15 4 60 false false
+DROP_D 250 4 1000 false false
+------------------------------------------------------------------------------
+DROP_A 100 5 500 false false
+DROP_B 1 5 5 false false
+DROP_C 15 5 75 false false
+DROP_D 250 5 1250 false false
+------------------------------------------------------------------------------
+==============================================================================
+C2. SIMULATOR x2..x5 — MODEL PELUANG (operasi yang BERBEDA)
+==============================================================================
+Ini menunjukkan bahwa istilah 'loot multiplier' itu ambigu.
+imul pada register mengubah JUMLAH, bukan PELUANG.
+------------------------------------------------------------------------------
+id p dasar x P(>=1)
+------------------------------------------------------------------------------
+DROP_A 1.0 2 1.0
+DROP_B 0.25 2 0.4375
+DROP_C 0.6 2 0.84
+DROP_D 0.05 2 0.097500000000000031
+------------------------------------------------------------------------------
+DROP_A 1.0 3 1.0
+DROP_B 0.25 3 0.578125
+DROP_C 0.6 3 0.93599999999999994
+DROP_D 0.05 3 0.14262500000000011
+------------------------------------------------------------------------------
+DROP_A 1.0 4 1.0
+DROP_B 0.25 4 0.68359375
+DROP_C 0.6 4 0.9744
+DROP_D 0.05 4 0.18549375000000012
+------------------------------------------------------------------------------
+DROP_A 1.0 5 1.0
+DROP_B 0.25 5 0.7626953125
+DROP_C 0.6 5 0.98976
+DROP_D 0.05 5 0.22621906250000023
+------------------------------------------------------------------------------
+Perhatikan: menggandakan peluang TIDAK pernah memberi hasil linear
+(dibatasi 100%), sedangkan menggandakan jumlah linear tapi bisa wrap.
+==============================================================================
+C3. NILAI HARAPAN (expected value) — 100 kejadian
+==============================================================================
+id x per kejadian total x100
+------------------------------------------------------------------------------
+DROP_A 2 200.0 20000.0
+DROP_B 2 0.5 50.0
+DROP_C 2 18.0 1800.0
+DROP_D 2 25.0 2500.0
+------------------------------------------------------------------------------
+DROP_A 3 300.0 30000.0
+DROP_B 3 0.75 75.0
+DROP_C 3 27.0 2700.0
+DROP_D 3 37.5 3750.0
+------------------------------------------------------------------------------
+DROP_A 4 400.0 40000.0
+DROP_B 4 1.0 100.0
+DROP_C 4 36.0 3600.0
+DROP_D 4 50.0 5000.0
+------------------------------------------------------------------------------
+DROP_A 5 500.0 50000.0
+DROP_B 5 1.25 125.0
+DROP_C 5 45.0 4500.0
+DROP_D 5 62.5 6250.0
+------------------------------------------------------------------------------
+==============================================================================
+D1. CHECKLIST ALUR DATA — APA YANG TERBUKTI vs BELUM
+==============================================================================
+[TERBUKTI] A1 (arsitektur)
+     klaim : R12D adalah 32-bit rendah dari R12; R12W = 16-bit, R12B = 8-bit.
+     uji   : Dokumentasi Intel/AMD SDM. Tidak perlu dibuktikan ulang.
+------------------------------------------------------------------------------
+[TERBUKTI] A2 (arsitektur)
+     klaim : Penulisan 32-bit ke register x86-64 menolkan bit 32..63, jadi imul pada R12D membuat R12 = zero-extend(R12D).
+     uji   : Intel SDM Vol.1 §3.4.1.1 (64-bit mode register behavior).
+------------------------------------------------------------------------------
+[TERBUKTI] A3 (arsitektur)
+     klaim : imul signed 32-bit overflow -> hasil terpotong 2^32 dan membalik tanda; flag OF/CF ikut berubah dan dapat mengubah percabangan (jo/jc) setelahnya.
+     uji   : Intel SDM, instruksi IMUL. Dapat direproduksi di emulator.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G1 (game)
+     klaim : Pada titik hook tersebut, R12D berisi JUMLAH LOOT.
+     uji   : Telusuri instruksi yang MENULIS R12D sebelum titik hook (backward slice). Bila sumbernya bukan argumen/field jumlah loot, klaim ini gugur.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G2 (game)
+     klaim : Nilai R12D di titik itu mengalir ke fungsi yang mengomit sumber daya (forward taint), tanpa konsumen lain di antaranya.
+     uji   : Tandai nilai, lalu amati apakah ia sampai ke pembaruan inventori. Cek apakah R12 dipakai sebagai counter/pointer di antara titik hook dan commit.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G3 (game)
+     klaim : Titik hook dieksekusi tepat SATU KALI per kejadian drop (bukan per frame / per entitas / per tick).
+     uji   : Pasang hit-counter pasif, bandingkan hit count dengan jumlah drop yang ter observe di layar.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G4 (game)
+     klaim : Nilai hasil perkalian tidak ditimpa, dibatasi (clamp), atau direkonsiliasi oleh sisi server sebelum akhir misi.
+     uji   : Bandingkan jumlah di HUD, di layar hasil misi, dan di profil setelah misi. Selisih = ada rekonsiliasi.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G5 (game)
+     klaim : Faktor pengali 2..5 berada di bawah ambang deteksi/ban.
+     uji   : Tidak dapat dibuktikan dari sisi klien. Ini soal kebijakan risiko, bukan soal teknis. Lihat catatan risiko.
+------------------------------------------------------------------------------
+Ringkasan: A* = fakta arsitektur CPU (terbukti, universal).
+           G* = klaim spesifik game (BELUM terbukti tanpa source/RE).
+Selama G1..G4 belum lulus uji, menyebut R12D sebagai 'jumlah loot'
+adalah ASUMSI, bukan fakta.
+==============================================================================
+E1. DEMONSTRASI PENANGANAN ERROR (setiap kasus harus tertangkap)
+==============================================================================
+  amount hilang (nil) -> TERTANGKAP nil + pesan: field 'amount' wajib berupa angka
+  amount bertipe string non-angka -> TERTANGKAP nil + pesan: field 'amount' wajib berupa angka
+  amount negatif -> TERTANGKAP nil + pesan: field 'amount' tidak boleh negatif
+  chance di luar [0,1] -> TERTANGKAP nil + pesan: field 'chance' harus dalam [0,1]
+  multiplier = 0 (pembagi nol) -> TERTANGKAP nil + pesan: multiplier nol
+  nilai NaN -> TERTANGKAP nil + pesan: nilai NaN
+  nilai tak hingga -> TERTANGKAP nil + pesan: nilai tak hingga
+  drop bukan tabel -> TERTANGKAP nil + pesan: entri drop bukan tabel
+  memanggil nil sebagai fungsi -> TERTANGKAP nilai false: objek yang dipanggil bukan function (tipe: nil)
+------------------------------------------------------------------------------
+tertangkap 9 dari 9 kasus.
+==============================================================================
+F1. SELF-TEST
+==============================================================================
+  [OK]   wrap32(2147483647) = 2147483647
+  [OK]   wrap32(2147483648) -> wrap = -2147483648
+  [OK]   wrap32(-1) = -1
+  [OK]   wrap32(4294967296) = 0
+  [OK]   imul_r32(100, 3) = 300
+  [OK]   imul_r32(1e9, 3) -> signed wrap = -1294967296
+  [OK]   imul_r32(2147483647, 2) = -2
+  [OK]   overflow_threshold(2) = 1073741823
+  [OK]   overflow_threshold(5) = 429496729
+  [OK]   wrap16(70000) = 4464
+  [OK]   sim_quantity 100 x2 = 200
+  [OK]   sim_quantity 100 x2 cap 150 = 150
+  [OK]   sim_quantity cap flag = true
+  [OK]   sim_quantity amount nil -> nil+pesan = nil
+  [OK]   sim_quantity amount nil -> ada pesan = true
+  [OK]   sim_chance 0.5 x2 = 0.75 = 750
+  [OK]   sim_chance dibatasi 1.0 = true
+  [OK]   EV = 0.5*10*4*100 = 2000.0
+------------------------------------------------------------------------------
+self-test: 18 lulus, 0 gagal
+==============================================================================
+G1. PENUTUP — STATUS YANG HARUS DIBEDAKAN
+==============================================================================
+(1) RUNTIME   : skrip selesai dieksekusi = true
+(2) DIAGNOSTIK: lihat Bagian A0..F1 di atas (ini data, bukan aksi).
+(3) GAMEPLAY  : TIDAK ADA perubahan. Tidak ada loot yang berubah.
+
+PERTANYAAN YANG TERJAWAB:
+  Q: Bisakah OWH menjalankan skrip .pluto ini?      -> Lihat (1).
+  Q: Berapa hasil x2..x5 secara matematis?          -> Bagian C.
+  Q: Apakah loot di game benar-benar x2..x5?        -> TIDAK. Titik.
+
+PERTANYAAN YANG BELUM TERJAWAB (butuh bukti tambahan):
+  - Apa nama API OWH yang sesungguhnya?  -> Bagian A2, kirim dump-nya.
+  - Apakah R12D benar jumlah loot?       -> Bagian D1, item G1..G4.
+  - Berapa cap per misi?                 -> CFG.mission_cap = nil.
+selesai dalam 0.0067010000000000056 detik.
+  [OK  ] eksekusi tanpa error tanpa string.format             
+  [OK  ] log internal tetap terisi                            #=330
+  [OK  ] baris log tidak mengandung 'nil' ganda               
+
+[Skenario 5] Auto-run DIMATIKAN lewat OWH_RESEARCH_NO_AUTORUN
+  [OK  ] eksekusi tanpa error                                 
+  [OK  ] belum menghasilkan log saat dimuat                   #=0
+owh_loot_research v1.0.0 mulai.
+Mode: READ-ONLY. Skrip ini tidak menyentuh memori game, register,
+atau hasil drop. Ia hanya mengamati runtime dan menghitung model.
+==============================================================================
+A0. INFO RUNTIME
+==============================================================================
+versi _VERSION        : Lua 5.5
+tabel `pluto` ada     : false
+penanda khusus Pluto  : 0
+debug / io / os       : true / true / true
+string.format / pcall : true / true
+require               : true
+sink output terdeteksi: 1
+   - sink aktif: print
+==============================================================================
+A1. PROBE HIPOTESIS GLOBAL (bukan klaim API)
+==============================================================================
+Daftar ini HANYA dites keberadaannya. Tidak ada fungsi yang dipanggil.
+------------------------------------------------------------------------------
+[TIDAK ADA] OWH        -- namespace utama helper
+[TIDAK ADA] owh        -- namespace utama (huruf kecil)
+[TIDAK ADA] memory     -- akses memori
+[TIDAK ADA] process    -- akses proses
+[TIDAK ADA] hooks      -- manajemen hook
+[TIDAK ADA] hook       -- pemasangan hook
+[TIDAK ADA] game       -- state game
+[TIDAK ADA] player     -- state pemain
+[TIDAK ADA] loot       -- state loot
+[TIDAK ADA] Log        -- logger host
+[TIDAK ADA] console    -- konsol host
+------------------------------------------------------------------------------
+Kesimpulan: bila semua [TIDAK ADA], runtime ini TIDAK mengekspos API
+publik apa pun ke skrip. Temukan nama aslinya lewat dump _G di bawah.
+==============================================================================
+A2. INVENTARIS GLOBAL _G (bukti utama)
+==============================================================================
+total global: 52 | dicetak: 52 (batas dump_limit=120)
+------------------------------------------------------------------------------
+  _G                     table       { assert:function, compareversions:function, next:function, pcall:function, rawlen:function, setmetatable:function, tonumber:function, utf8:table, ... }
+  _PVERSION              string      = Pluto 0.13.1
+  _VERSION               string      = Lua 5.5
+  arg                    table       { -1:string, 0:string }
+  assert                 function  
+  callonce               function  
+  collectgarbage         function  
+  compareversions        function  
+  coroutine              table       { close:function, create:function, isyieldable:function, resume:function, status:function, wrap:function, xresume:function, yield:function, ... }
+  debug                  table       { debug:function, getlocal:function, sethook:function, setlocal:function, setmetatable:function, setupvalue:function, traceback:function, upvaluejoin:function, ... }
+  dofile                 function  
+  dumpvar                function  
+  error                  function  
+  exception              table       { __construct:function, __name:string, __tostring:function }
+  exportvar              function  
+  getmetatable           function  
+  instanceof             function  
+  io                     table       { absolute:function, chmod:function, flush:function, listdir:function, open:function, relative:function, symlink:function, type:function, ... }
+  ipairs                 function  
+  load                   function  
+  loadfile               function  
+  math                   table       { atan:function, deg:function, floor:function, frexp:function, min:function, modf:function, rand:function, trunc:function, ... }
+  newuserdata            function  
+  next                   function  
+  os                     table       { date:function, difftime:function, millis:function, nanos:function, seconds:function, time:function, tmpname:function, unixseconds:function, ... }
+  package                table       { config:string, cpath:string, loaded:table, loadlib:function, path:string, preload:table, searchers:table, searchpath:function, ... }
+  pairs                  function  
+  pcall                  function  
+  print                  function  
+  range                  function  
+  rawequal               function  
+  rawget                 function  
+  rawlen                 function  
+  rawset                 function  
+  require                function  
+  sdiv                   function  
+  select                 function  
+  setmetatable           function  
+  smod                   function  
+  string                 table       { casefold:function, contains:function, dump:function, gsub:function, isalnum:function, span:function, strip:function, uformat:function, ... }
+  table                  table       { countvalues:function, filtered:function, find:function, findindex:function, foreach:function, modget:function, reordered:function, values:function, ... }
+  tonumber               function  
+  tostring               function  
+  type                   function  
+  udiv                   function  
+  umod                   function  
+  utf8                   table       { char:function, charpattern:string, codepoint:function, codes:function, len:function, offset:function }
+  utonumber              function  
+  utostring              function  
+  warn                   function  
+  wcall                  function  
+  xpcall                 function  
+------------------------------------------------------------------------------
+Salin daftar di atas. Itulah API yang SEBENARNYA tersedia di OWH-mu.
+Kirim ke saya dan saya akan menyesuaikan skrip ke nama yang nyata.
+==============================================================================
+B1. MODEL imul PADA REGISTER 32-BIT (R12D) — untuk tiap x2..x5
+==============================================================================
+Catatan: ini ARITMETIKA, bukan pembacaan memori game.
+------------------------------------------------------------------------------
+input      keluar (nil)     32-bit signed    overflow?    ambang aman
+------------------------------------------------------------------------------
+-- multiplier x2 | nilai maks aman sebelum wrap: 1073741823
+   1          2                2                false        1073741823
+   15         30               30               false        1073741823
+   100        200              200              false        1073741823
+   250        500              500              false        1073741823
+   1000       2000             2000             false        1073741823
+   100000     200000           200000           false        1073741823
+   1000000000 2000000000       2000000000       false        1073741823
+   2147483647 4294967294       -2               true         1073741823
+-- multiplier x3 | nilai maks aman sebelum wrap: 715827882
+   1          3                3                false        715827882
+   15         45               45               false        715827882
+   100        300              300              false        715827882
+   250        750              750              false        715827882
+   1000       3000             3000             false        715827882
+   100000     300000           300000           false        715827882
+   1000000000 3000000000       -1294967296      true         715827882
+   2147483647 6442450941       2147483645       true         715827882
+-- multiplier x4 | nilai maks aman sebelum wrap: 536870911
+   1          4                4                false        536870911
+   15         60               60               false        536870911
+   100        400              400              false        536870911
+   250        1000             1000             false        536870911
+   1000       4000             4000             false        536870911
+   100000     400000           400000           false        536870911
+   1000000000 4000000000       -294967296       true         536870911
+   2147483647 8589934588       -4               true         536870911
+-- multiplier x5 | nilai maks aman sebelum wrap: 429496729
+   1          5                5                false        429496729
+   15         75               75               false        429496729
+   100        500              500              false        429496729
+   250        1250             1250             false        429496729
+   1000       5000             5000             false        429496729
+   100000     500000           500000           false        429496729
+   1000000000 5000000000       705032704        true         429496729
+   2147483647 10737418235      2147483643       true         429496729
+------------------------------------------------------------------------------
+BACA INI:
+  * Kolom 'keluar (nil)' = yang diharapkan pengguna awam.
+  * Kolom '32-bit signed'= yang SESUNGGUHNYA tersisa di R12D.
+  * Bila 'overflow?' = true, nilainya MEMBALIK TANDA atau terpotong.
+    Contoh: 1000000000 x3 = 3000000000 -> -1294967296
+  * imul juga MENGUBAH FLAG OF/CF. Bila setelah titik hook ada jo/jc,
+    cabang itu bisa berubah perilaku -> bug/crash, bukan cuma angka.
+==============================================================================
+B2. LEBAR REGISTER: mengapa R12D tidak sama dengan R12W / R12B
+==============================================================================
+nilai contoh: 70000
+  sebagai R12D (32-bit signed) : 70000
+  sebagai R12W (16-bit signed) : 4464  <-- terpotong!
+  sebagai R12B ( 8-bit signed) : 112  <-- terpotong!
+------------------------------------------------------------------------------
+Implikasinya: menyebut 'R12' tanpa sufiks itu ambigu. R12D, R12W, R12B,
+dan R12 adalah empat hal berbeda dengan rentang berbeda. Klaim bahwa
+'R12D adalah jumlah loot' harus menyebut lebarnya secara eksplisit.
+==============================================================================
+C1. SIMULATOR x2..x5 — MODEL KUANTITAS (apa yang imul lakukan)
+==============================================================================
+Data: SINTETIS (bukan drop rate Warframe yang asli). Ganti di SAMPLE_DROPS.
+------------------------------------------------------------------------------
+id           base     x          hasil   overflow     cap?
+------------------------------------------------------------------------------
+DROP_A        100     2            200      false    false
+DROP_B          1     2              2      false    false
+DROP_C         15     2             30      false    false
+DROP_D        250     2            500      false    false
+------------------------------------------------------------------------------
+DROP_A        100     3            300      false    false
+DROP_B          1     3              3      false    false
+DROP_C         15     3             45      false    false
+DROP_D        250     3            750      false    false
+------------------------------------------------------------------------------
+DROP_A        100     4            400      false    false
+DROP_B          1     4              4      false    false
+DROP_C         15     4             60      false    false
+DROP_D        250     4           1000      false    false
+------------------------------------------------------------------------------
+DROP_A        100     5            500      false    false
+DROP_B          1     5              5      false    false
+DROP_C         15     5             75      false    false
+DROP_D        250     5           1250      false    false
+------------------------------------------------------------------------------
+==============================================================================
+C2. SIMULATOR x2..x5 — MODEL PELUANG (operasi yang BERBEDA)
+==============================================================================
+Ini menunjukkan bahwa istilah 'loot multiplier' itu ambigu.
+imul pada register mengubah JUMLAH, bukan PELUANG.
+------------------------------------------------------------------------------
+id          p dasar     x         P(>=1)
+------------------------------------------------------------------------------
+DROP_A       1.0000     2         1.0000
+DROP_B       0.2500     2         0.4375
+DROP_C       0.6000     2         0.8400
+DROP_D       0.0500     2         0.0975
+------------------------------------------------------------------------------
+DROP_A       1.0000     3         1.0000
+DROP_B       0.2500     3         0.5781
+DROP_C       0.6000     3         0.9360
+DROP_D       0.0500     3         0.1426
+------------------------------------------------------------------------------
+DROP_A       1.0000     4         1.0000
+DROP_B       0.2500     4         0.6836
+DROP_C       0.6000     4         0.9744
+DROP_D       0.0500     4         0.1855
+------------------------------------------------------------------------------
+DROP_A       1.0000     5         1.0000
+DROP_B       0.2500     5         0.7627
+DROP_C       0.6000     5         0.9898
+DROP_D       0.0500     5         0.2262
+------------------------------------------------------------------------------
+Perhatikan: menggandakan peluang TIDAK pernah memberi hasil linear
+(dibatasi 100%), sedangkan menggandakan jumlah linear tapi bisa wrap.
+==============================================================================
+C3. NILAI HARAPAN (expected value) — 100 kejadian
+==============================================================================
+id           x     per kejadian       total x100
+------------------------------------------------------------------------------
+DROP_A       2           200.00         20000.00
+DROP_B       2             0.50            50.00
+DROP_C       2            18.00          1800.00
+DROP_D       2            25.00          2500.00
+------------------------------------------------------------------------------
+DROP_A       3           300.00         30000.00
+DROP_B       3             0.75            75.00
+DROP_C       3            27.00          2700.00
+DROP_D       3            37.50          3750.00
+------------------------------------------------------------------------------
+DROP_A       4           400.00         40000.00
+DROP_B       4             1.00           100.00
+DROP_C       4            36.00          3600.00
+DROP_D       4            50.00          5000.00
+------------------------------------------------------------------------------
+DROP_A       5           500.00         50000.00
+DROP_B       5             1.25           125.00
+DROP_C       5            45.00          4500.00
+DROP_D       5            62.50          6250.00
+------------------------------------------------------------------------------
+==============================================================================
+D1. CHECKLIST ALUR DATA — APA YANG TERBUKTI vs BELUM
+==============================================================================
+[TERBUKTI] A1     (arsitektur)
+     klaim : R12D adalah 32-bit rendah dari R12; R12W = 16-bit, R12B = 8-bit.
+     uji   : Dokumentasi Intel/AMD SDM. Tidak perlu dibuktikan ulang.
+------------------------------------------------------------------------------
+[TERBUKTI] A2     (arsitektur)
+     klaim : Penulisan 32-bit ke register x86-64 menolkan bit 32..63, jadi imul pada R12D membuat R12 = zero-extend(R12D).
+     uji   : Intel SDM Vol.1 §3.4.1.1 (64-bit mode register behavior).
+------------------------------------------------------------------------------
+[TERBUKTI] A3     (arsitektur)
+     klaim : imul signed 32-bit overflow -> hasil terpotong 2^32 dan membalik tanda; flag OF/CF ikut berubah dan dapat mengubah percabangan (jo/jc) setelahnya.
+     uji   : Intel SDM, instruksi IMUL. Dapat direproduksi di emulator.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G1     (game)
+     klaim : Pada titik hook tersebut, R12D berisi JUMLAH LOOT.
+     uji   : Telusuri instruksi yang MENULIS R12D sebelum titik hook (backward slice). Bila sumbernya bukan argumen/field jumlah loot, klaim ini gugur.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G2     (game)
+     klaim : Nilai R12D di titik itu mengalir ke fungsi yang mengomit sumber daya (forward taint), tanpa konsumen lain di antaranya.
+     uji   : Tandai nilai, lalu amati apakah ia sampai ke pembaruan inventori. Cek apakah R12 dipakai sebagai counter/pointer di antara titik hook dan commit.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G3     (game)
+     klaim : Titik hook dieksekusi tepat SATU KALI per kejadian drop (bukan per frame / per entitas / per tick).
+     uji   : Pasang hit-counter pasif, bandingkan hit count dengan jumlah drop yang ter observe di layar.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G4     (game)
+     klaim : Nilai hasil perkalian tidak ditimpa, dibatasi (clamp), atau direkonsiliasi oleh sisi server sebelum akhir misi.
+     uji   : Bandingkan jumlah di HUD, di layar hasil misi, dan di profil setelah misi. Selisih = ada rekonsiliasi.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] G5     (game)
+     klaim : Faktor pengali 2..5 berada di bawah ambang deteksi/ban.
+     uji   : Tidak dapat dibuktikan dari sisi klien. Ini soal kebijakan risiko, bukan soal teknis. Lihat catatan risiko.
+------------------------------------------------------------------------------
+Ringkasan: A* = fakta arsitektur CPU (terbukti, universal).
+           G* = klaim spesifik game (BELUM terbukti tanpa source/RE).
+Selama G1..G4 belum lulus uji, menyebut R12D sebagai 'jumlah loot'
+adalah ASUMSI, bukan fakta.
+==============================================================================
+E1. DEMONSTRASI PENANGANAN ERROR (setiap kasus harus tertangkap)
+==============================================================================
+  amount hilang (nil)                    -> TERTANGKAP       nil + pesan: field 'amount' wajib berupa angka
+  amount bertipe string non-angka        -> TERTANGKAP       nil + pesan: field 'amount' wajib berupa angka
+  amount negatif                         -> TERTANGKAP       nil + pesan: field 'amount' tidak boleh negatif
+  chance di luar [0,1]                   -> TERTANGKAP       nil + pesan: field 'chance' harus dalam [0,1]
+  multiplier = 0 (pembagi nol)           -> TERTANGKAP       nil + pesan: multiplier nol
+  nilai NaN                              -> TERTANGKAP       nil + pesan: nilai NaN
+  nilai tak hingga                       -> TERTANGKAP       nil + pesan: nilai tak hingga
+  drop bukan tabel                       -> TERTANGKAP       nil + pesan: entri drop bukan tabel
+  memanggil nil sebagai fungsi           -> TERTANGKAP       nilai false: objek yang dipanggil bukan function (tipe: nil)
+------------------------------------------------------------------------------
+tertangkap 9 dari 9 kasus.
+==============================================================================
+F1. SELF-TEST
+==============================================================================
+  [OK]   wrap32(2147483647)                             = 2147483647
+  [OK]   wrap32(2147483648) -> wrap                     = -2147483648
+  [OK]   wrap32(-1)                                     = -1
+  [OK]   wrap32(4294967296)                             = 0
+  [OK]   imul_r32(100, 3)                               = 300
+  [OK]   imul_r32(1e9, 3) -> signed wrap                = -1294967296
+  [OK]   imul_r32(2147483647, 2)                        = -2
+  [OK]   overflow_threshold(2)                          = 1073741823
+  [OK]   overflow_threshold(5)                          = 429496729
+  [OK]   wrap16(70000)                                  = 4464
+  [OK]   sim_quantity 100 x2                            = 200
+  [OK]   sim_quantity 100 x2 cap 150                    = 150
+  [OK]   sim_quantity cap flag                          = true
+  [OK]   sim_quantity amount nil -> nil+pesan           = nil
+  [OK]   sim_quantity amount nil -> ada pesan           = true
+  [OK]   sim_chance 0.5 x2 = 0.75                       = 750
+  [OK]   sim_chance dibatasi 1.0                        = true
+  [OK]   EV = 0.5*10*4*100                              = 2000.0
+------------------------------------------------------------------------------
+self-test: 18 lulus, 0 gagal
+==============================================================================
+G1. PENUTUP — STATUS YANG HARUS DIBEDAKAN
+==============================================================================
+(1) RUNTIME   : skrip selesai dieksekusi = true
+(2) DIAGNOSTIK: lihat Bagian A0..F1 di atas (ini data, bukan aksi).
+(3) GAMEPLAY  : TIDAK ADA perubahan. Tidak ada loot yang berubah.
+
+PERTANYAAN YANG TERJAWAB:
+  Q: Bisakah OWH menjalankan skrip .pluto ini?      -> Lihat (1).
+  Q: Berapa hasil x2..x5 secara matematis?          -> Bagian C.
+  Q: Apakah loot di game benar-benar x2..x5?        -> TIDAK. Titik.
+
+PERTANYAAN YANG BELUM TERJAWAB (butuh bukti tambahan):
+  - Apa nama API OWH yang sesungguhnya?  -> Bagian A2, kirim dump-nya.
+  - Apakah R12D benar jumlah loot?       -> Bagian D1, item G1..G4.
+  - Berapa cap per misi?                 -> CFG.mission_cap = nil.
+selesai dalam 0.005 detik.
+  [OK  ] M.run() dapat dipanggil manual                       
+  [OK  ] log terisi setelah run manual                        #=330
+
+==============================================================================
+HASIL: 27 lulus, 0 gagal, total 27
+==============================================================================
+Semua skenario lulus.
+INGAT: 'skrip berjalan' BUKAN berarti loot di game berubah x2..x5.
+Driver ini hanya menguji runtime dan ketahanan, bukan efek gameplay.
