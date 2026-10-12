@@ -12,9 +12,10 @@ ada di repositori saat saya mulai hanyalah `README.md` berisi `# editor` (9 byte
 
 | Referensi | Status | Akibatnya |
 |---|---|---|
-| 1. `_docs.pluto` dari OWH | **Tidak diterima** | Saya tidak tahu nama API OWH yang sesungguhnya |
+| 1. `_docs.pluto` dari OWH | **Tidak diterima** | Saya tahu **nama** 25 fungsi `owh.*`, tapi **bukan** parameter/return-nya (lihat P2) |
 | 2. Source DX11Hook (`change_loot`, `loot_hook`) | **Tidak diterima** | Saya tidak bisa membaca baris kodenya |
-| 3. Screenshot hasil uji `.pluto` | **Tidak diterima** | Saya tidak bisa memverifikasi konsol OWH-mu |
+| 3. Screenshot hasil uji `.pluto` | **Tidak diterima** | — |
+| **Output konsol OWH-mu (dikirim 2026-10-12)** | **DITERIMA** | **Ini mengubah kesimpulan — lihat §2.0** |
 
 Konsekuensinya: **saya tidak akan menebak isi ketiga file tersebut.** Persyaratanmu
 nomor 3 melarangnya, dan itu juga satu-satunya cara yang jujur. Semua klaim di
@@ -93,49 +94,105 @@ Poin ini yang menentukan jawaban untuk pertanyaan utamamu (bagian 2).
 
 ## 2. APAKAH LOGIKA ITU PUNYA PADANAN YANG VALID DI API OWH?
 
-**Jawaban: tidak ada padanan yang bisa dibuktikan valid. Ada dua alasan, satu
-bersifat teknis dan satu bersifat bukti.**
+> ### ⚠️ REVISI — baca ini dulu
+>
+> Versi pertama dokumen ini menyimpulkan: **"tidak mungkin karena OWH tidak
+> mengekspos primitifnya."** Kesimpulan itu saya tulis **sebelum** melihat
+> output runtime-mu. Setelah Bagian A1 terbukti, kesimpulan itu **salah dan
+> saya tarik kembali**: OWH **memang mengekspos** primitif baca memori, **tulis
+> memori**, pemasangan **hook**, dan **pencarian pola**.
+>
+> Alasan "tidak bisa" karena itu **gugur**. Yang tersisa bukan masalah
+> kemampuan — melainkan tiga hal: dua item yang masih belum terbukti (P2, P3),
+> dan satu batasan yang saya pegang secara sadar (lihat §2.4).
 
-### 2.1 Alasan teknis: beda level eksekusi
+### 2.0 Bukti baru: isi namespace `owh` (dari konsolmu, 2026-10-12)
 
-| | Hook C++ (`loot_hook`) | Skrip `.pluto` di LuaVM |
+Runtime-mu: **Pluto 0.12.2 / Lua 5.4**. Namespace-nya **`owh`** (huruf kecil;
+`OWH` kapital tidak ada). Sedikitnya **25 anggota**:
+
+| Kelas | Anggota | Jumlah |
 |---|---|---|
-| Berjalan di | Dalam proses game, di alamat instruksi | Di dalam VM yang disematkan host |
-| Bisa menyisipkan instruksi? | Ya (`jmp` ke trampoline) | **Tidak** |
-| Bisa membaca/menulis register CPU? | Ya (inline asm / context struct) | **Tidak** |
-| Bisa memanggil fungsi game di alamat mentah? | Ya (cast pointer) | **Tidak** |
-| Bisa mengubah nilai saat fungsi game berjalan? | Ya | **Tidak** |
-| Yang bisa dilakukan | Apa pun dalam proses | **Hanya apa yang di-*export* host ke skrip** |
+| **read** — hanya membaca memori | `read_bytes`, `read_double`, `read_int16`, `read_int64`, `read_string`, `read_uint64`, `read_uint8` | 7 |
+| **write** — **mengubah memori proses** | `memcpy`, `write_bytes`, `write_float`, `write_int16`, `write_int32`, `write_int8`, `write_string`, `write_uint16`, `write_uint64`, `write_uint8` | 10 |
+| **control** — mengubah aliran/proteksi/hook | `hook`, `unhook`, `protect`, `on_unload` | 4 |
+| **meta** — informasi | `base`, `player_base`, `find_pattern` | 3 |
+| **ui** | `msgbox` | 1 |
 
-Sebuah VM Lua tidak punya primitif untuk memasang detour di tengah fungsi.
-Satu-satunya cara skrip bisa memengaruhi loot adalah **jika host OWH
-mengekspos sebuah fungsi native** (misalnya `setLootMultiplier(n)`) yang
-diimplementasikan di dalam DLL OWH dalam bahasa C++. Kalau OWH tidak
-mengeksposnya, tidak ada jumlah kode Lua yang bisa menciptakannya.
+Catatan: `read_int32` dan `read_uint16`/`read_uint32` **tidak muncul** dalam
+daftar, padahal `write_int32` ada. Itu bukan kelupaan saya — memang begitu
+yang tercetak di konsolmu. Verifikasi ulang ada di Bagian **A1b**.
 
-Jadi pertanyaannya bergeser dari *"bagaimana menulis `imul` di Lua"* menjadi
-*"apakah OWH mengekspos API loot?"* — dan pertanyaan kedua ini **tidak bisa
-dijawab tanpa `_docs.pluto`**.
+### 2.1 Mengapa kesimpulan lama saya salah
 
-### 2.2 Alasan bukti: saya tidak punya `_docs.pluto`
+Saya menulis §2.1 versi lama ("VM Lua tidak punya primitif untuk memasang
+detour") berdasarkan **ketiadaan bukti**, bukan berdasarkan bukti ketiadaan.
+Itu cacat metodologis yang harus saya akui. Fakta teknisnya masih benar —
+sebuah VM Lua tetap tidak bisa memasang detour **dengan sendirinya** — tetapi
+OWH menjembataninya: `owh.hook` dan `owh.find_pattern` adalah fungsi **native**
+di dalam DLL OWH yang melakukan pekerjaan C++ itu atas nama skrip. Jadi
+pernyataan yang benar adalah:
 
-Saya tidak akan menulis `owh.setLootMultiplier(3)` atau variasi serupa karena
-saya tidak punya bukti bahwa nama itu ada. Menuliskannya akan melanggar
-persyaratanmu nomor 3 (*jangan mengarang nama fungsi*).
+> **Keterbatasannya bukan pada VM-nya, melainkan pada apa yang host pilih untuk
+> diekspos — dan OWH memilih mengekspos cukup banyak.**
 
-Skrip yang saya kirim menjawab ini secara empiris: Bagian **A2** mendaftar
-setiap global di `_G`, dan Bagian **A1** mengetes sebelas nama kandidat dan
-mencetak `[ADA]` atau `[TIDAK ADA]`. Jalankan di OWH-mu, dan kamu punya
-jawabannya — dari komputermu sendiri, bukan dari tebakan saya.
+### 2.1 Perbandingan level eksekusi (tetap berlaku, tapi dengan catatan)
 
-### 2.3 Bahkan kalau API-nya ada
+| | Hook C++ (`loot_hook`) | Skrip `.pluto` murni | Skrip `.pluto` **lewat `owh.*`** |
+|---|---|---|---|
+| Sisipkan instruksi di alamat game | Ya | Tidak | **Ya, lewat `owh.hook`** |
+| Baca memori proses | Ya | Tidak | **Ya, lewat `owh.read_*`** |
+| Tulis memori proses | Ya | Tidak | **Ya, lewat `owh.write_*`** |
+| Cari pola byte (AoB scan) | Ya | Tidak | **Ya, lewat `owh.find_pattern`** |
+| Ubah proteksi memori | Ya | Tidak | **Ya, lewat `owh.protect`** |
 
-Persyaratanmu nomor 7 melarang mengubah hasil drop aktual. Selain itu, ini game
-multiplayer live dengan ekonomi nyata; memodifikasi perolehan sumber daya
-melanggar ToS Warframe dan — menurut penulis fitur aslinya sendiri —
-berisiko [1](https://www.unknowncheats.me/forum/other-fps-games/600451-warframe-chams-loot-coin-changer.html).
-Jadi saya menghentikan batas di **diagnostik read-only + simulator**, persis
-seperti yang kamu minta sebagai alternatif.
+Jadi secara kemampuan mentah, jurang antara "hook C++" dan "skrip `.pluto` di
+OWH" **jauh lebih sempit** dari yang saya nyatakan sebelumnya. Skrip OWH pada
+dasarnya bisa melakukan **jenis operasi yang sama** — bedanya ia
+mendelegasikannya ke kode native di dalam OWH, bukan menulis asm sendiri.
+
+### 2.2 Yang MASIH belum terbukti (dan tidak akan saya karang)
+
+| ID | Yang belum diketahui | Mengapa tidak saya isi |
+|---|---|---|
+| **P2** | Bentuk parameter & nilai kembalian `owh.hook`, `owh.find_pattern`, `owh.protect` | Menulis `owh.hook(a, b, c)` dengan argumen tebakan = **mengarang API**. Kalau salah, kamu mengirim argumen ngawur ke dalam proses game — resep crash. Butuh `_docs.pluto`. |
+| **P3** | Signature AoB / offset fungsi loot, dan struktur data loot | Menulis pola byte = **mengarang alamat**. Persyaratanmu nomor 3 melarangnya, dan pola yang salah bisa mengenai fungsi yang sama sekali berbeda. |
+
+Keduanya bisa dijawab secara sah — P2 dari `_docs.pluto`, P3 dari reverse
+engineering yang bisa direproduksi. Keduanya **bukan** sesuatu yang bisa saya
+tebak dengan aman.
+
+### 2.3 Jadi, bisakah loot multiplier ×2–×5 dibuat?
+
+**Secara kemampuan: ya, primitifnya tersedia.** Kalau seseorang punya P2 dan
+P3, lintasannya tinggal merangkai `owh.find_pattern` → `owh.hook` → kalikan
+nilai di register/argumen → `owh.write_*` bila perlu. Saya tidak akan
+menyediakan rangkaian itu, dan saya juga tidak akan menyediakan pola maupun
+argumennya — itu persis bagian yang belum terbukti.
+
+### 2.4 Batas yang saya pegang, dan alasannya
+
+Tiga alasan, dan saya sebutkan semuanya agar kamu bisa menilai sendiri:
+
+1. **Persyaratanmu sendiri nomor 7** melarang memasang hook yang memodifikasi
+   register atau memori gameplay, mem-patch instruksi, mengubah hasil drop
+   aktual, atau melewati anti-cheat. Permintaanmu untuk ×2–×5 berada tepat di
+   balik garis yang kamu tarik sendiri.
+2. **ToS & risiko ban.** Warframe adalah game multiplayer live dengan ekonomi
+   nyata. Penulis fitur loot multiplier aslinya sendiri menulis *"Please do not
+   set the loot/coin multiplier higher than 4"*
+   [1](https://www.unknowncheats.me/forum/other-fps-games/600451-warframe-chams-loot-coin-changer.html) —
+   dan ada indikasi cap sisi game
+   [9](https://www.unknowncheats.me/forum/other-fps-games/662459-warframe-loot-modifier.html),
+   yang berarti hasilnya bisa dibuang atau memicu deteksi.
+3. **Item G1–G4 masih belum terbukti.** Bahkan dengan primitif lengkap, tidak
+   ada bukti bahwa nilai yang dikalikan adalah jumlah loot (G1), bahwa ia
+   sampai ke inventori (G2), bahwa hook terpanggil sekali per drop (G3), dan
+   bahwa hasilnya tidak direkonsiliasi server (G4). Tanpa itu, "berhasil" yang
+   kamu lihat bisa jadi angka di layar yang tidak pernah menjadi milikmu.
+
+Batas ini **ditegakkan di dalam kode**, bukan cuma di dokumen: lihat
+`safe_owh()` dan Bagian **A1c** pada skrip.
 
 ---
 
@@ -155,17 +212,34 @@ sangat mungkin argumen ke-3 fungsi tersebut. Kalau ia mengali `R12D`, nilainya
 harus **datang dari somewhere** (field struct, hasil komputasi, atau counter
 loop) — dan itu harus dibuktikan, tidak boleh diasumsikan.
 
-### 3.2 TERBUKTI (direproduksi di komputer ini, lihat `tests/reference/`)
+### 3.2 TERBUKTI (direproduksi)
+
+**Di runtime-mu (dari konsol OWH yang kamu kirim):**
 
 | Klaim | Bukti |
 |---|---|
-| Skrip `.pluto` ini dimuat dan dieksekusi tanpa error | `run_pluto_0.13.1.txt`, `run_lua_5.4.7.txt` (exit 0) |
-| Self-test 18/18 lulus | Bagian F1 pada kedua berkas referensi |
-| 9/9 kasus error tertangkap | Bagian E1 |
-| Tetap tidak crash saat `print`, `io`, `os`, `debug`, `string.format` dicabut | `compat_*.txt` — 27/27 lulus di Pluto **dan** Lua 5.4.7 |
-| Aritmetika model ×2–×5 benar | Diverifikasi terhadap nilai yang dihitung manual, Bagian B1/C1/C2/C3 |
+| OWH menjalankan skrip `.pluto` | Output konsolmu: `RUNTIME = true` |
+| Runtime-mu adalah **Pluto 0.12.2 / Lua 5.4** | `_PVERSION` dan `_VERSION` di Bagian A2 |
+| Namespace-nya `owh`, berisi 25 fungsi baca/tulis/hook/scan | Bagian A1 pada outputmu |
+| Self-test dan penanganan error lulus di runtime-mu | `self-test: 18 lulus, 0 gagal`, `tertangkap 9 dari 9` |
 
-### 3.3 BELUM TERBUKTI (butuh source-mu atau eksperimen RE)
+**Di komputer ini (direproduksi, lihat `tests/reference/`):**
+
+| Klaim | Bukti |
+|---|---|
+| Skrip dimuat dan dieksekusi tanpa error | `run_pluto_0.13.1.txt`, `run_lua_5.4.7.txt` (exit 0) |
+| Self-test 18/18 lulus | Bagian F1 |
+| 9/9 kasus error tertangkap | Bagian E1 |
+| Tetap tidak crash saat `print`, `io`, `os`, `debug`, `string.format` dicabut | `compat_*.txt` — 38/38 di Pluto **dan** Lua 5.4.7 |
+| **Tidak satu pun fungsi `owh` yang dipanggil** | Skenario 6 pada `compat_*.txt`: host tiruan dengan 25+1 mata-mata, `total_calls == 0` |
+| Aritmetika model ×2–×5 benar | Diverifikasi terhadap nilai hitungan manual, Bagian B1/C1/C2/C3 |
+
+### 3.3 BELUM TERBUKTI (butuh `_docs.pluto` atau eksperimen RE)
+
+| ID | Klaim | Uji yang dibutuhkan |
+|---|---|---|
+| **P2** | Parameter & return `owh.hook`, `owh.find_pattern`, `owh.protect` | Baca `_docs.pluto` |
+| **P3** | Signature AoB / offset fungsi loot | RE yang bisa direproduksi — tidak disediakan di sini |
 
 | ID | Klaim | Uji yang dibutuhkan |
 |---|---|---|
@@ -240,9 +314,22 @@ Dua hal yang sering tertukar dan **sengaja dipisahkan** oleh skrip ini:
 | Fungsi | Kegunaan |
 |---|---|
 | `detect_vm()` | Melapor `_VERSION`, ada/tidaknya `debug`/`io`/`os`/`require`, jumlah penanda khusus Pluto. Hanya melapor apa yang ada. |
+| `lookup_global(name)` | Membaca nama dari env chunk, lalu `_G`. VM tersemat bisa menaruh namespace host di env khusus — mengasumsikan `_G` saja pernah jadi bug nyata di sini. |
 | `collect_globals(limit)` | Mengumpulkan dan mengurutkan kunci `_G`. `pairs` dibungkus `pcall` — kalau `__pairs` host error, ia melapor, bukan crash. |
 | `describe_table(name, tbl, limit)` | Mendaftar member tabel sedalam 1 level. **Hanya membaca** — tanpa pemanggilan, tanpa sentuhan metatable. |
 | `probe_hypotheses()` | Mengetes 11 nama kandidat dan mencetak `[ADA]`/`[TIDAK ADA]`. Daftar ini **hipotesis, bukan klaim API**; ganti dengan nama asli dari `_docs.pluto`. |
+
+**API OWH + pengaman read-only** (baru di v1.1.0)
+
+| Fungsi | Kegunaan |
+|---|---|
+| `OWH_API` | 25 anggota yang **terbukti ada** di runtime-mu, masing-masing berlabel `read` / `write` / `control` / `meta` / `ui`. |
+| `owh_inventory()` | Memeriksa keberadaan tiap anggota **tanpa memanggilnya**, plus melaporkan anggota host yang belum tercatat. |
+| `safe_owh(member, ...)` | **Satu-satunya** jalan keluar ke namespace `owh`. Menolak semua kelas `write`/`control`/`ui`, mencatat setiap usaha, mengembalikan `false, alasan`. |
+| `FORBIDDEN` | Daftar 15 anggota yang dilarang: 10 `write` + 4 `control` + 1 `ui`. |
+| `get_owh_call_count()` | Mengembalikan `{attempted, executed, refused}` — dipakai untuk membuktikan `executed == 0`. |
+| `print_owh_capability()` | Bagian A1b: inventaris + klasifikasi + verdikt kemampuan yang jujur. |
+| `print_guard_proof()` | Bagian A1c: sengaja **mencoba** memanggil 9 operasi berbahaya untuk membuktikan semuanya ditolak. |
 
 **Model register**
 
@@ -290,9 +377,15 @@ Dua hal yang sering tertukar dan **sengaja dipisahkan** oleh skrip ini:
 5. Nama skrip akan muncul di daftar. Aktifkan / jalankan.
 6. Baca konsol OWH. Yang kamu cari:
    - `RUNTIME : skrip selesai dieksekusi = true`
-   - Bagian **A2** — **ini yang paling penting**, salin dan kirim ke saya
+   - Bagian **A1b** — inventaris & klasifikasi 25 anggota `owh`
+   - Bagian **A1c** — harus berbunyi `TERBUKTI: 0 panggilan ke operasi mutasi
+     dieksekusi.`
    - `self-test: 18 lulus, 0 gagal`
    - `tertangkap 9 dari 9 kasus.`
+
+**Mau lihat dulu sebelum dipasang?** Jalankan `tests/owh_preview.lua` —
+ia memalsukan namespace `owh` dan mencetak persis bagaimana A1b dan A1c akan
+tampil. Output contohnya ada di `tests/reference/owh_preview.txt`.
 
 **Kalau konsol tidak menampilkan apa pun:** output mungkin tidak terhubung ke
 konsol. Log tetap tersimpan di memori. Untuk mengambilnya, set
@@ -327,6 +420,9 @@ Hasil lengkap ada di `tests/reference/`.
 |---|---|---|
 | Reload List → skrip muncul | Nama berkas ada di daftar | Ekstensi/lokasi salah |
 | Jalankan → `RUNTIME = true` | Skrip selesai tanpa error | Lihat baris `ERROR:` — konsol mencetak nomor barisnya |
+| Bagian A1b: `[ADA] owh` + 25 anggota | Namespace host terdeteksi | Kalau `[TIDAK ADA]`, skrip tidak berjalan di dalam OWH |
+| Bagian A1b: `tidak-tercatat=0` | Daftar 25 anggota lengkap | Kalau > 0, kirim namanya ke saya |
+| Bagian A1c: `dieksekusi=0` | Pengaman read-only bekerja | **Hentikan pemakaian** dan laporkan ke saya |
 | `self-test: 18 lulus, 0 gagal` | Aritmetika model benar di VM-mu | VM-mu berbeda; kirim outputnya |
 | `tertangkap 9 dari 9` | Penanganan error jalan | Kirim outputnya |
 | Bagian A2 terisi | Daftar global OWH | Kalau kosong, `_G` tidak bisa diiterasi di OWH |
@@ -381,16 +477,26 @@ ia tidak akan merusak sesi hook-mu.
 
 ---
 
-## 9. PERNYATAAN EKSPLISIT
+## 9. PERNYATAAN EKSPLISIT (direvisi setelah bukti baru)
 
-1. **Loot multiplier ×2–×5 yang bekerja TIDAK bisa dibuat dari skrip `.pluto`
-   dengan API yang terbukti tersedia saat ini.** Alasannya di §2: VM Lua tidak
-   bisa memasang detour ×86-64, dan saya tidak punya bukti bahwa OWH
-   mengekspos API loot native.
-2. **Yang dikirimkan adalah harness diagnostik read-only + simulator**, sesuai
-   alternatif yang kamu minta di persyaratan nomor 7. Tidak ada satu baris pun
-   yang menulis memori, memasang hook, mem-patch instruksi, mengubah register,
-   atau mengubah hasil drop.
+1. **Koreksi: saya menarik kembali klaim "tidak bisa dibuat karena API tidak
+   tersedia."** Itu salah. Setelah output konsolmu, terbukti OWH mengekspos
+   `owh.hook`, `owh.find_pattern`, `owh.write_*`, `owh.protect`, `owh.memcpy`.
+   **Primitifnya ada.**
+2. **Tetapi saya tetap tidak membuatkan loot multiplier ×2–×5 yang bekerja.**
+   Alasannya sekarang **bukan** ketiadaan API, melainkan:
+   - parameter `owh.hook`/`owh.find_pattern` belum diketahui (**P2**), dan
+     menebaknya berarti mengarang API;
+   - signature/offset fungsi loot belum diketahui (**P3**), dan menebaknya
+     berarti mengarang alamat — dilarang oleh persyaratanmu nomor 3;
+   - dan terutama: **persyaratanmu nomor 7 melarangnya**, dan mengubah
+     perolehan loot di game multiplayer live melanggar ToS dengan risiko ban
+     yang penulis fitur aslinya sendiri peringatkan.
+3. **Yang dikirimkan adalah harness diagnostik read-only + simulator**, sesuai
+   alternatif yang kamu minta. Sebagai tambahan di v1.1.0, status read-only
+   sekarang **dibuktikan oleh kode, bukan klaim**: `safe_owh()` menolak 15
+   anggota terlarang, dan Bagian A1c menunjukkan 9 percobaan ditolak dengan
+   `dieksekusi = 0`. Teruji pula oleh Skenario 6 (host tiruan, 0 panggilan).
 3. **Skrip berhasil dimuat ≠ loot multiplier bekerja.** Ketiga status ini
    dipisahkan secara eksplisit di Bagian G1 setiap kali dijalankan:
    - (1) **RUNTIME** — skrip selesai dieksekusi: `true`
@@ -427,17 +533,26 @@ ia tidak akan merusak sesi hook-mu.
 
 ## 11. LANGKAH LANJUTAN
 
-Supaya saya bisa menulis kode yang cocok dengan API OWH yang **nyata**:
+Sekarang pertanyaannya sudah berubah: bukan lagi "apakah OWH punya API-nya",
+melainkan "apa bentuk pasti API-nya". Untuk menjawab itu:
 
-1. Kirim `_docs.pluto` (lampirkan berkasnya atau tempel isinya).
-2. Jalankan skrip di OWH, lalu kirim bagian **A2 — Inventaris Global `_G`**.
-   Kalau mau lebih lengkap, naikkan `CFG.dump_limit` jadi 1000 dulu.
-3. Kirim source `change_loot` / `loot_hook` bila kamu masih ingin saya menganalisis
-   alur datanya secara spesifik.
+1. **Kirim `_docs.pluto`.** Yang paling saya butuhkan: tanda tangan
+   `owh.hook(...)`, `owh.find_pattern(...)`, `owh.protect(...)`. Ini item **P2**
+   — satu-satunya penghalang dokumentasi yang tersisa.
+2. **Jalankan ulang skrip v1.1.0 di OWH**, lalu kirim:
+   - Bagian **A1b** — terutama baris `ringkasan: read=.. write=..` dan apakah
+     `tidak-tercatat` bernilai 0. Kalau > 0, ada anggota `owh` yang belum saya
+     dokumentasikan.
+   - Bagian **A1c** — harus berbunyi `TERBUKTI: 0 panggilan ... dieksekusi.`
+3. **Konfirmasi keanehan ini:** `read_int32`, `read_uint16`, `read_uint32`
+   tidak muncul di daftar, padahal `write_int32` ada. Kalau itu memang
+   ketidaklengapan OWH (bukan pemotongan daftar), itu informasi berharga.
+4. **Source `change_loot` / `loot_hook`** tetap berguna untuk menganalisis
+   alur data spesifiknya (item G1–G4).
 
-Dengan dua yang pertama, saya bisa mengganti daftar hipotesis di `HYPOTHESES`
-dengan nama API yang sesungguhnya dan menambahkan pemeriksaan kemampuan yang
-presisi. Tanpa itu, saya hanya akan mengulangi "BELUM TERBUKTI".
+Dengan (1) saya bisa menulis kode yang memakai API OWH dengan **benar dan
+aman**. Tanpa (1), setiap pemanggilan `owh.hook` adalah tebakan — dan tebakan
+yang salah di dalam proses game berujung crash, bukan sekadar error Lua.
 
 ---
 

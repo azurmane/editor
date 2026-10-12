@@ -204,6 +204,88 @@ do
 end
 
 --------------------------------------------------------------------------------
+-- Skenario 6: host OWH TIRUAN — bukti bahwa skrip benar-benar read-only
+--
+-- Kita pasang tabel `owh` palsu berisi 25 anggota yang TERBUKTI ada di OWH
+-- (lihat docs/ANALYSIS.md) ditambah satu anggota asing untuk menguji deteksi
+-- "tidak tercatat". Setiap anggota adalah fungsi mata-mata yang menghitung
+-- berapa kali ia dipanggil. Bila skrip benar read-only, SEMUA penghitung
+-- harus tetap 0 — termasuk setelah skrip sengaja mencoba memanggil yang
+-- berbahaya di Bagian A1c.
+--------------------------------------------------------------------------------
+
+print("\n[Skenario 6] Host OWH tiruan — SEMUA panggilan mutasi harus 0")
+do
+    local OWH_MEMBERS = {
+        "base", "find_pattern", "hook", "memcpy", "msgbox", "on_unload",
+        "player_base", "protect", "read_bytes", "read_double", "read_int16",
+        "read_int64", "read_string", "read_uint64", "read_uint8", "unhook",
+        "write_bytes", "write_float", "write_int16", "write_int32",
+        "write_int8", "write_string", "write_uint16", "write_uint64",
+        "write_uint8",
+    }
+    local spy = {}
+    local owh_fake = {}
+    for i = 1, #OWH_MEMBERS do
+        local name = OWH_MEMBERS[i]
+        spy[name] = 0
+        owh_fake[name] = function(...) spy[name] = spy[name] + 1 return 0 end
+    end
+    -- anggota asing: menguji deteksi "TIDAK TERCATAT"
+    spy["sesuatu_yang_asing"] = 0
+    owh_fake["sesuatu_yang_asing"] = function()
+        spy["sesuatu_yang_asing"] = spy["sesuatu_yang_asing"] + 1
+        return 0
+    end
+
+    local env = make_env({}, { owh = owh_fake })
+    local f = load_with_env(src, "=owh_loot_research(owh-host)", env)
+    local ok, mod = pcall(f)
+    check("eksekusi tanpa error di host OWH tiruan", ok, ok and "" or tostring(mod))
+    if ok and type(mod) == "table" then
+        -- inventaris harus menemukan semua anggota
+        local inv = mod.owh_inventory()
+        check("inventaris menemukan 25+1 anggota", #inv == 26, "ditemukan " .. #inv)
+
+        local unc = 0
+        for i = 1, #inv do
+            if inv[i].kind == "TIDAK TERCATAT" then unc = unc + 1 end
+        end
+        check("anggota asing terdeteksi sebagai tidak-tercatat", unc == 1,
+            "jumlah=" .. unc)
+
+        -- penghitung internal
+        local c = mod.get_owh_call_count()
+        check("usaha pemanggilan tercatat (9 dari A1c)", c.attempted == 9,
+            "attempted=" .. c.attempted)
+        check("0 panggilan yang benar-benar dieksekusi", c.executed == 0,
+            "executed=" .. c.executed)
+        check("9 usaha ditolak pengaman", c.refused == 9, "refused=" .. c.refused)
+
+        -- pembuktian utama: tidak SATU pun fungsi host tersentuh
+        local touched, total_calls = {}, 0
+        for name, n in pairs(spy) do
+            if n > 0 then touched[#touched + 1] = name .. "(" .. n .. ")" end
+            total_calls = total_calls + n
+        end
+        check("TIDAK ADA fungsi owh yang dipanggil sama sekali",
+            total_calls == 0,
+            total_calls == 0 and "0 panggilan" or "terserang: " .. table.concat(touched, ", "))
+
+        -- pengaman harus menolak walau dipanggil manual
+        local ok2, res2 = pcall(mod.safe_owh, "write_int32", 0, 0)
+        check("safe_owh menolak write_int32", ok2 and res2 == false)
+        check("write_int32 tidak tersentuh setelah itu", spy.write_int32 == 0,
+            "count=" .. spy.write_int32)
+
+        local ok3, res3 = pcall(mod.safe_owh, "hook", nil, nil)
+        check("safe_owh menolak hook", ok3 and res3 == false)
+        check("hook tidak tersentuh setelah itu", spy.hook == 0,
+            "count=" .. spy.hook)
+    end
+end
+
+--------------------------------------------------------------------------------
 -- ringkasan
 --------------------------------------------------------------------------------
 

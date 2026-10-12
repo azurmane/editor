@@ -1,4 +1,4 @@
-owh_loot_research v1.0.0 mulai.
+owh_loot_research v1.1.0 mulai.
 Mode: READ-ONLY. Skrip ini tidak menyentuh memori game, register,
 atau hasil drop. Ia hanya mengamati runtime dan menghitung model.
 ==============================================================================
@@ -29,30 +29,55 @@ Daftar ini HANYA dites keberadaannya. Tidak ada fungsi yang dipanggil.
 [TIDAK ADA] Log        -- logger host
 [TIDAK ADA] console    -- konsol host
 ------------------------------------------------------------------------------
-Kesimpulan: bila semua [TIDAK ADA], runtime ini TIDAK mengekspos API
-publik apa pun ke skrip. Temukan nama aslinya lewat dump _G di bawah.
+Kesimpulan: tidak ada satu pun hipotesis yang cocok. Runtime ini
+tidak mengekspos API publik di nama-nama tersebut. Temukan nama
+aslinya lewat dump _G di bawah.
+==============================================================================
+A1b. API OWH — INVENTARIS + KLASIFIKASI (bukti dari runtime-mu)
+==============================================================================
+Namespace `owh` TIDAK ditemukan di runtime ini.
+Bagian ini hanya terisi bila skrip dijalankan di dalam OWH.
+==============================================================================
+A1c. PEMBUKTIAN PENGAMAN READ-ONLY
+==============================================================================
+Skrip sengaja MENCOBA memanggil operasi berbahaya untuk membuktikan
+bahwa pengaman menolaknya. Tidak ada yang benar-benar dieksekusi.
+------------------------------------------------------------------------------
+  owh.write_int32  -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_bytes  -> namespace `owh` tidak tersedia di runtime ini
+  owh.write_float  -> namespace `owh` tidak tersedia di runtime ini
+  owh.memcpy       -> namespace `owh` tidak tersedia di runtime ini
+  owh.hook         -> namespace `owh` tidak tersedia di runtime ini
+  owh.unhook       -> namespace `owh` tidak tersedia di runtime ini
+  owh.protect      -> namespace `owh` tidak tersedia di runtime ini
+  owh.on_unload    -> namespace `owh` tidak tersedia di runtime ini
+  owh.msgbox       -> namespace `owh` tidak tersedia di runtime ini
+------------------------------------------------------------------------------
+ditolak 9 dari 9 percobaan.
+total usaha=9 | dieksekusi=0 | ditolak=9
+TERBUKTI: 0 panggilan ke operasi mutasi dieksekusi.
 ==============================================================================
 A2. INVENTARIS GLOBAL _G (bukti utama)
 ==============================================================================
 total global: 36 | dicetak: 36 (batas dump_limit=120)
 ------------------------------------------------------------------------------
-  _G                     table       { arg:table, coroutine:table, debug:table, dofile:function, pcall:function, rawget:function, rawset:function, utf8:table, ... }
+  _G                     table       { _G:table, error:function, io:table, math:table, next:function, package:table, select:function, warn:function, ... }
   _VERSION               string      = Lua 5.4
   arg                    table       { -1:string, 0:string }
   assert                 function  
   collectgarbage         function  
   coroutine              table       { close:function, create:function, isyieldable:function, resume:function, running:function, status:function, wrap:function, yield:function, ... }
-  debug                  table       { debug:function, getlocal:function, getupvalue:function, setlocal:function, setmetatable:function, setuservalue:function, traceback:function, upvaluejoin:function, ... }
+  debug                  table       { debug:function, gethook:function, getinfo:function, getlocal:function, getupvalue:function, setcstacklimit:function, setupvalue:function, setuservalue:function, ... }
   dofile                 function  
   error                  function  
   getmetatable           function  
-  io                     table       { flush:function, output:function, read:function, stderr:userdata, stdin:userdata, stdout:userdata, tmpfile:function, write:function, ... }
+  io                     table       { flush:function, input:function, read:function, stderr:userdata, stdin:userdata, stdout:userdata, type:function, write:function, ... }
   ipairs                 function  
   load                   function  
   loadfile               function  
-  math                   table       { acos:function, asin:function, floor:function, huge:number, max:function, random:function, randomseed:function, sin:function, ... }
+  math                   table       { abs:function, acos:function, exp:function, log:function, maxinteger:number, random:function, tan:function, tointeger:function, ... }
   next                   function  
-  os                     table       { clock:function, date:function, difftime:function, execute:function, exit:function, setlocale:function, time:function, tmpname:function, ... }
+  os                     table       { clock:function, difftime:function, execute:function, exit:function, getenv:function, rename:function, time:function, tmpname:function, ... }
   package                table       { config:string, cpath:string, loaded:table, loadlib:function, path:string, preload:table, searchers:table, searchpath:function, ... }
   pairs                  function  
   pcall                  function  
@@ -64,7 +89,7 @@ total global: 36 | dicetak: 36 (batas dump_limit=120)
   require                function  
   select                 function  
   setmetatable           function  
-  string                 table       { char:function, dump:function, find:function, len:function, lower:function, sub:function, unpack:function, upper:function, ... }
+  string                 table       { byte:function, char:function, dump:function, find:function, len:function, lower:function, reverse:function, unpack:function, ... }
   table                  table       { concat:function, insert:function, move:function, pack:function, remove:function, sort:function, unpack:function }
   tonumber               function  
   tostring               function  
@@ -222,6 +247,18 @@ DROP_D       5            62.50          6250.00
 ==============================================================================
 D1. CHECKLIST ALUR DATA — APA YANG TERBUKTI vs BELUM
 ==============================================================================
+[TERBUKTI] P1     (runtime OWH)
+     klaim : OWH mengekspos namespace `owh` berisi sedikitnya 25 fungsi: baca memori, tulis memori, hook/unhook, find_pattern, protect, memcpy, msgbox.
+     uji   : Output Bagian A1 pada konsol OWH-mu, 2026-10-12 (Pluto 0.12.2 / Lua 5.4). Dapat diulang kapan saja.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] P2     (runtime OWH)
+     klaim : Bentuk parameter dan nilai kembalian owh.hook, owh.find_pattern, dan owh.protect.
+     uji   : Baca _docs.pluto. Tanpa itu, memanggilnya = menebak-nebak dan berpotensi mengirim argumen salah ke dalam proses game.
+------------------------------------------------------------------------------
+[BELUM TERBUKTI] P3     (runtime OWH)
+     klaim : Signature AoB / offset fungsi yang menangani loot, dan struktur data loot di memori.
+     uji   : Reverse engineering yang bisa direproduksi. TIDAK disediakan di sini — mengarangnya melanggar persyaratan nomor 3.
+------------------------------------------------------------------------------
 [TERBUKTI] A1     (arsitektur)
      klaim : R12D adalah 32-bit rendah dari R12; R12W = 16-bit, R12B = 8-bit.
      uji   : Dokumentasi Intel/AMD SDM. Tidak perlu dibuktikan ulang.
@@ -305,10 +342,25 @@ G1. PENUTUP — STATUS YANG HARUS DIBEDAKAN
 PERTANYAAN YANG TERJAWAB:
   Q: Bisakah OWH menjalankan skrip .pluto ini?      -> Lihat (1).
   Q: Berapa hasil x2..x5 secara matematis?          -> Bagian C.
+  Q: Apakah OWH mengekspos API memori/hook?         -> YA. Bagian A1b.
   Q: Apakah loot di game benar-benar x2..x5?        -> TIDAK. Titik.
 
+KOREKSI TERHADAP VERSI 1.0.0 (penting, jangan dilewati):
+  v1.0.0 menyimpulkan 'tidak mungkin karena API tidak tersedia'.
+  Kesimpulan itu diambil saat belum ada bukti tentang runtime-mu.
+  Setelah Bagian A1 terbukti: PRIMITIF-NYA ADA. Jadi alasan
+  'tidak bisa' GUGUR. Yang tersisa bukan masalah kemampuan, melainkan:
+    a) parameter owh.hook/owh.find_pattern belum diketahui (P2),
+    b) signature/offset fungsi loot belum diketahui (P3),
+    c) dan terutama: mengubah loot di game live melanggar ToS serta
+       persyaratanmu sendiri nomor 7.
+  Skrip ini tetap read-only — sekarang dibuktikan oleh Bagian A1c.
+
 PERTANYAAN YANG BELUM TERJAWAB (butuh bukti tambahan):
-  - Apa nama API OWH yang sesungguhnya?  -> Bagian A2, kirim dump-nya.
-  - Apakah R12D benar jumlah loot?       -> Bagian D1, item G1..G4.
-  - Berapa cap per misi?                 -> CFG.mission_cap = nil.
-selesai dalam 0.001 detik.
+  - Parameter & return owh.hook / find_pattern? -> P2, butuh _docs.pluto.
+  - Signature/offset fungsi loot?               -> P3, butuh RE.
+  - Apakah R12D benar jumlah loot?              -> G1..G4.
+  - Berapa cap per misi?                        -> CFG.mission_cap = nil.
+  - Apakah daftar 25 anggota itu lengkap?       -> Bagian A1b, lihat
+    baris 'tidak-tercatat'. Kalau >0, ada yang belum saya dokumentasikan.
+selesai dalam 0.002 detik.

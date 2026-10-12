@@ -21,6 +21,9 @@
  Yang skrip ini LAKUKAN:
    [o] Inventarisasi API: mendaftar global apa saja yang benar-benar tersedia
        di runtime OWH (bukti, bukan tebakan).
+   [o] Mengklasifikasi anggota `owh` yang TERBUKTI ada (baca / tulis /
+       kontrol / meta / ui) dan MENOLAK semua kelas tulis & kontrol lewat
+       safe_owh(). Pengaman ada di kode, bukan cuma di komentar.
    [o] Pemodelan register 32-bit: mensimulasikan apa yang terjadi secara
        matematis bila sebuah nilai di-imul dengan faktor 2..5, termasuk
        overflow signed 32-bit.
@@ -48,7 +51,7 @@
 --------------------------------------------------------------------------------
 
 local MODULE  = "owh_loot_research"
-local VERSION = "1.0.0"
+local VERSION = "1.1.0"
 
 local CFG = {
     multipliers     = { 2, 3, 4, 5 },   -- target konfigurasi yang diteliti
@@ -62,6 +65,12 @@ local CFG = {
     run_selftest    = true,             -- jalankan self-test saat dimuat
     run_on_load     = true,             -- false = hanya muat modul, jangan auto-run
     log_sink_mode   = "auto",           -- "auto" | "print" | "stderr" | "all" | "none"
+    member_limit    = 200,              -- maks member per tabel host yang dicetak
+    -- Memanggil getter yang DIDUGA tidak mengubah apa pun (owh.base,
+    -- owh.player_base). Tetap MATI secara default: ini hanyalah inferensi dari
+    -- namanya, belum pernah saya jalankan. Nyalakan sendiri bila kamu paham
+    -- risikonya dan sudah membaca _docs.pluto.
+    call_readonly_probes = false,
 }
 
 -- Konstanta arsitektur x86-64 (fakta Intel/AMD SDM, bukan tebakan game)
@@ -101,8 +110,10 @@ local function current_env()
     return _G
 end
 
---- Membaca sebuah flag lingkungan dari env chunk, lalu _G.
-local function read_flag(name)
+--- Membaca sebuah nama dari env chunk, lalu _G (mana pun yang lebih dulu ada).
+--  Dipakai untuk flag DAN untuk pencarian global, karena VM tersemat bisa
+--  saja menaruh namespace host di env khusus, bukan di _G.
+local function lookup_global(name)
     local env = current_env()
     if type(env) == "table" then
         local v = rawget(env, name)
@@ -317,16 +328,148 @@ local HYPOTHESES = {
     { "console",     "konsol host" },
 }
 
+--------------------------------------------------------------------------------
+-- 3b. API OWH YANG SUDAH TERBUKTI ADA
+--------------------------------------------------------------------------------
+-- SUMBER BUKTI: output konsol OWH 2026-10-12 (Pluto 0.12.2 / Lua 5.4).
+-- Dua puluh lima nama di bawah ini BUKAN tebakan — mereka tercetak oleh
+-- Bagian A1 pada runtime OWH milikmu sendiri.
+--
+-- Yang BELUM diketahui dan karena itu TIDAK disediakan di sini:
+--   * bentuk parameter/return dari owh.hook, owh.find_pattern, owh.protect
+--   * signature AoB / offset untuk fungsi loot game
+--   * struktur memori loot
+-- Ketiganya sengaja dikosongkan. Mengisinya dengan karangan melanggar
+-- persyaratan "jangan mengarang alamat/signature/offset/struktur".
+--------------------------------------------------------------------------------
+
+local OWH_API = {
+    -- { nama, kelas }
+    -- kelas "read"    : hanya membaca memori
+    -- kelas "write"   : MENGUBAH memori proses
+    -- kelas "control" : mengubah aliran eksekusi / proteksi memori / hook
+    -- kelas "meta"    : informasi, bukan akses memori
+    -- kelas "ui"      : antarmuka
+    { "base",          "meta"    },
+    { "find_pattern",  "meta"    },
+    { "hook",          "control" },
+    { "memcpy",        "write"   },
+    { "msgbox",        "ui"      },
+    { "on_unload",     "control" },
+    { "player_base",   "meta"    },
+    { "protect",       "control" },
+    { "read_bytes",    "read"    },
+    { "read_double",   "read"    },
+    { "read_int16",    "read"    },
+    { "read_int64",    "read"    },
+    { "read_string",   "read"    },
+    { "read_uint64",   "read"    },
+    { "read_uint8",    "read"    },
+    { "unhook",        "control" },
+    { "write_bytes",   "write"   },
+    { "write_float",   "write"   },
+    { "write_int16",   "write"   },
+    { "write_int32",   "write"   },
+    { "write_int8",    "write"   },
+    { "write_string",  "write"   },
+    { "write_uint16",  "write"   },
+    { "write_uint64",  "write"   },
+    { "write_uint8",   "write"   },
+}
+
+-- Anggota yang TIDAK BOLEH disentuh skrip ini, dalam keadaan apa pun.
+local FORBIDDEN = {}
+for i = 1, #OWH_API do
+    local m = OWH_API[i]
+    if m[2] == "write" or m[2] == "control" or m[2] == "ui" then
+        FORBIDDEN[m[1]] = m[2]
+    end
+end
+
+-- Penghitung akses. Dipakai untuk MEMBUKTIKAN bahwa skrip tidak memanggil
+-- apa pun dari namespace owh. Bisa dibaca lewat M.get_owh_call_count().
+local OWH_CALLS = { attempted = 0, executed = 0, refused = 0, log = {} }
+
+--- Satu-satunya jalan keluar menuju namespace `owh`.
+--  Menolak semua anggota kelas write/control/ui, dan mencatat setiap usaha.
+--  Mengembalikan false + alasan — tidak pernah melempar.
+local function safe_owh(member, ...)
+    OWH_CALLS.attempted = OWH_CALLS.attempted + 1
+    local host = lookup_global("owh")
+    if type(host) ~= "table" then
+        OWH_CALLS.refused = OWH_CALLS.refused + 1
+        return false, "namespace `owh` tidak tersedia di runtime ini"
+    end
+    local kind = FORBIDDEN[member]
+    if kind then
+        OWH_CALLS.refused = OWH_CALLS.refused + 1
+        OWH_CALLS.log[#OWH_CALLS.log + 1] = "DITOLAK: owh." .. tostr(member) ..
+                                            " (kelas " .. kind .. ")"
+        return false, "DITOLAK oleh pengaman: owh." .. tostr(member) ..
+                      " adalah operasi kelas '" .. kind ..
+                      "'. Skrip ini read-only dan tidak akan memanggilnya."
+    end
+    local fn = rawget(host, member)
+    if type(fn) ~= "function" then
+        OWH_CALLS.refused = OWH_CALLS.refused + 1
+        return false, "owh." .. tostr(member) .. " tidak ada atau bukan function"
+    end
+    if not CFG.call_readonly_probes then
+        OWH_CALLS.refused = OWH_CALLS.refused + 1
+        return false, "pemanggilan dinonaktifkan (CFG.call_readonly_probes = false)"
+    end
+    OWH_CALLS.executed = OWH_CALLS.executed + 1
+    OWH_CALLS.log[#OWH_CALLS.log + 1] = "DIPANGGIL: owh." .. tostr(member)
+    return pcall(fn, ...)
+end
+
+--- Memeriksa keberadaan tiap anggota yang tercatat, TANPA memanggilnya.
+--  Mengembalikan daftar { nama, kelas, ada, tipe }.
+local function owh_inventory()
+    local rows, seen = {}, {}
+    local host = lookup_global("owh")
+    if type(host) ~= "table" then host = nil end
+    -- 1. semua yang tercatat di OWH_API
+    for i = 1, #OWH_API do
+        local name, kind = OWH_API[i][1], OWH_API[i][2]
+        seen[name] = true
+        rows[#rows + 1] = {
+            name = name, kind = kind,
+            present = host ~= nil and rawget(host, name) ~= nil,
+            vtype = host and type(rawget(host, name)) or "n/a",
+        }
+    end
+    -- 2. anggota host yang BELUM tercatat (kalau ada yang terlewat)
+    if host then
+        local extra = {}
+        local ok = pcall(function()
+            for k in pairs(host) do
+                if not seen[k] then extra[#extra + 1] = tostr(k) end
+            end
+        end)
+        if ok then
+            table.sort(extra)
+            for i = 1, #extra do
+                rows[#rows + 1] = {
+                    name = extra[i], kind = "TIDAK TERCATAT",
+                    present = true, vtype = type(rawget(host, extra[i])),
+                }
+            end
+        end
+    end
+    return rows
+end
+
 --- Mengetes hipotesis: ADA atau TIDAK ADA. Tidak pernah memanggil apa pun.
 local function probe_hypotheses()
     local results = {}
     for i = 1, #HYPOTHESES do
         local name, note = HYPOTHESES[i][1], HYPOTHESES[i][2]
-        local v = rawget(_G, name)
+        local v = lookup_global(name)
         local t = type(v)
         local members = nil
         if t == "table" then
-            local rows, err = describe_table(name, v, 25)
+            local rows, err = describe_table(name, v, CFG.member_limit)
             if rows and #rows > 0 then
                 local parts = {}
                 for j = 1, #rows do
@@ -478,6 +621,28 @@ end
 local function evidence_checklist()
     return {
         {
+            id = "P1", scope = "runtime OWH", status = "TERBUKTI",
+            claim = "OWH mengekspos namespace `owh` berisi sedikitnya 25 fungsi: "
+                 .. "baca memori, tulis memori, hook/unhook, find_pattern, "
+                 .. "protect, memcpy, msgbox.",
+            test  = "Output Bagian A1 pada konsol OWH-mu, 2026-10-12 "
+                 .. "(Pluto 0.12.2 / Lua 5.4). Dapat diulang kapan saja.",
+        },
+        {
+            id = "P2", scope = "runtime OWH", status = "BELUM TERBUKTI",
+            claim = "Bentuk parameter dan nilai kembalian owh.hook, "
+                 .. "owh.find_pattern, dan owh.protect.",
+            test  = "Baca _docs.pluto. Tanpa itu, memanggilnya = menebak-nebak "
+                 .. "dan berpotensi mengirim argumen salah ke dalam proses game.",
+        },
+        {
+            id = "P3", scope = "runtime OWH", status = "BELUM TERBUKTI",
+            claim = "Signature AoB / offset fungsi yang menangani loot, dan "
+                 .. "struktur data loot di memori.",
+            test  = "Reverse engineering yang bisa direproduksi. TIDAK disediakan "
+                 .. "di sini — mengarangnya melanggar persyaratan nomor 3.",
+        },
+        {
             id = "A1", scope = "arsitektur", status = "TERBUKTI",
             claim = "R12D adalah 32-bit rendah dari R12; R12W = 16-bit, R12B = 8-bit.",
             test  = "Dokumentasi Intel/AMD SDM. Tidak perlu dibuktikan ulang.",
@@ -567,8 +732,102 @@ local function print_hypotheses()
         end
     end
     rule()
-    log("Kesimpulan: bila semua [TIDAK ADA], runtime ini TIDAK mengekspos API")
-    log("publik apa pun ke skrip. Temukan nama aslinya lewat dump _G di bawah.")
+    local found = 0
+    for i = 1, #r do if r[i].present then found = found + 1 end end
+    if found == 0 then
+        log("Kesimpulan: tidak ada satu pun hipotesis yang cocok. Runtime ini")
+        log("tidak mengekspos API publik di nama-nama tersebut. Temukan nama")
+        log("aslinya lewat dump _G di bawah.")
+    else
+        log("Kesimpulan: %d dari %d hipotesis ADA. Namespace host ditemukan.",
+            found, #r)
+        log("Rincian klasifikasi dan pengaman ada di Bagian A1b dan A1c.")
+    end
+end
+
+--- Laporan kemampuan berdasarkan API yang SUDAH TERBUKTI ada.
+--  Bagian ini menjawab: "OWH punya primitifnya, lalu kenapa tidak dipakai?"
+local function print_owh_capability()
+    header("A1b. API OWH — INVENTARIS + KLASIFIKASI (bukti dari runtime-mu)")
+
+    local host = lookup_global("owh")
+    if type(host) ~= "table" then
+        log("Namespace `owh` TIDAK ditemukan di runtime ini.")
+        log("Bagian ini hanya terisi bila skrip dijalankan di dalam OWH.")
+        return
+    end
+
+    local rows = owh_inventory()
+    local n_read, n_write, n_ctrl, n_meta, n_ui, n_new = 0, 0, 0, 0, 0, 0
+    log("%-16s %-16s %-10s %s", "anggota", "kelas", "ada?", "tipe")
+    rule()
+    for i = 1, #rows do
+        local r = rows[i]
+        log("  %-14s %-16s %-10s %s", r.name, r.kind, tostr(r.present), r.vtype)
+        if r.present then
+            if     r.kind == "read"           then n_read  = n_read  + 1
+            elseif r.kind == "write"          then n_write = n_write + 1
+            elseif r.kind == "control"        then n_ctrl  = n_ctrl  + 1
+            elseif r.kind == "meta"           then n_meta  = n_meta  + 1
+            elseif r.kind == "ui"             then n_ui    = n_ui    + 1
+            elseif r.kind == "TIDAK TERCATAT" then n_new   = n_new   + 1
+            end
+        end
+    end
+    rule()
+    log("ringkasan: read=%d  write=%d  control=%d  meta=%d  ui=%d  tidak-tercatat=%d",
+        n_read, n_write, n_ctrl, n_meta, n_ui, n_new)
+    rule()
+
+    log("VERDIKT KEMAMPUAN (jujur, tanpa dibuat-buat):")
+    log("  [TERBUKTI] OWH mengekspos primitif baca memori, TULIS memori,")
+    log("             pemasangan hook, dan pencarian pola.")
+    log("             Artinya pernyataan 'tidak mungkin karena API tidak")
+    log("             menyediakan' TIDAK lagi berlaku untuk runtime-mu.")
+    log("")
+    log("  [BELUM TERBUKTI] dan karena itu tidak saya isi:")
+    log("    1. bentuk parameter & return owh.hook / owh.find_pattern.")
+    log("       Menebaknya = mengarang API. Butuh _docs.pluto.")
+    log("    2. signature AoB / offset fungsi loot game.")
+    log("       Menebaknya = mengarang alamat. Butuh RE yang bisa diulang.")
+    log("    3. apakah nilai yang dikalikan benar-benar sampai ke inventori.")
+    log("       Ini item G2/G4 di Bagian D1 — belum ada buktinya.")
+    log("")
+    log("  [BATAS YANG SENGAJA DIPEGANG]")
+    log("    Skrip ini TIDAK memanggil owh.write_*, owh.memcpy, owh.hook,")
+    log("    owh.unhook, owh.protect, owh.on_unload, owh.msgbox — walau semua")
+    log("    itu tersedia. Alasannya: persyaratanmu nomor 7 melarangnya, dan")
+    log("    mengubah perolehan loot di game multiplayer live melanggar ToS.")
+    log("    Pengaman ini ditegakkan di kode, bukan cuma di komentar:")
+    log("    lihat fungsi safe_owh() dan Bagian A1c.")
+end
+
+--- Pembuktian bahwa pengaman benar-benar bekerja: coba panggil operasi
+--  terlarang, lalu tunjukkan bahwa semuanya ditolak.
+local function print_guard_proof()
+    header("A1c. PEMBUKTIAN PENGAMAN READ-ONLY")
+    log("Skrip sengaja MENCOBA memanggil operasi berbahaya untuk membuktikan")
+    log("bahwa pengaman menolaknya. Tidak ada yang benar-benar dieksekusi.")
+    rule()
+    local attempts = {
+        "write_int32", "write_bytes", "write_float", "memcpy",
+        "hook", "unhook", "protect", "on_unload", "msgbox",
+    }
+    local refused = 0
+    for i = 1, #attempts do
+        local ok, res = safe_owh(attempts[i], 0, 0)
+        if not ok then refused = refused + 1 end
+        log("  owh.%-12s -> %s", attempts[i], tostr(res))
+    end
+    rule()
+    log("ditolak %d dari %d percobaan.", refused, #attempts)
+    log("total usaha=%d | dieksekusi=%d | ditolak=%d",
+        OWH_CALLS.attempted, OWH_CALLS.executed, OWH_CALLS.refused)
+    if OWH_CALLS.executed > 0 then
+        log("PERINGATAN: ada panggilan yang lolos. Matikan skrip ini sekarang.")
+    else
+        log("TERBUKTI: 0 panggilan ke operasi mutasi dieksekusi.")
+    end
 end
 
 local function print_globals()
@@ -588,7 +847,7 @@ local function print_globals()
         if ok then t = vt end
         local extra = ""
         if t == "table" then
-            local rows, e2 = describe_table(k, v, 8)
+            local rows, e2 = describe_table(k, v, 8)   -- 8 agar dump _G tetap ringkas
             if rows and #rows > 0 then
                 local p = {}
                 for j = 1, #rows do p[#p + 1] = rows[j].key .. ":" .. rows[j].kind end
@@ -882,6 +1141,19 @@ local M = {
     evidence_checklist  = evidence_checklist,
     run_selftests       = run_selftests,
 
+    -- API OWH yang terbukti + pengaman read-only
+    owh_api             = OWH_API,
+    owh_inventory       = owh_inventory,
+    safe_owh            = safe_owh,
+    forbidden           = FORBIDDEN,
+    get_owh_call_count  = function()
+        return {
+            attempted = OWH_CALLS.attempted,
+            executed  = OWH_CALLS.executed,
+            refused   = OWH_CALLS.refused,
+        }
+    end,
+
     -- akses log
     get_log             = function() return LOG.buffer end,
     get_log_text        = function() return table.concat(LOG.buffer, "\n") end,
@@ -903,6 +1175,8 @@ function M.run()
     local ok, err = try(function()
         print_vm_info()
         print_hypotheses()
+        print_owh_capability()
+        print_guard_proof()
         print_globals()
         print_register_model()
         print_width_note()
@@ -928,12 +1202,27 @@ function M.run()
     log("PERTANYAAN YANG TERJAWAB:")
     log("  Q: Bisakah OWH menjalankan skrip .pluto ini?      -> Lihat (1).")
     log("  Q: Berapa hasil x2..x5 secara matematis?          -> Bagian C.")
+    log("  Q: Apakah OWH mengekspos API memori/hook?         -> YA. Bagian A1b.")
     log("  Q: Apakah loot di game benar-benar x2..x5?        -> TIDAK. Titik.")
     log("")
+    log("KOREKSI TERHADAP VERSI 1.0.0 (penting, jangan dilewati):")
+    log("  v1.0.0 menyimpulkan 'tidak mungkin karena API tidak tersedia'.")
+    log("  Kesimpulan itu diambil saat belum ada bukti tentang runtime-mu.")
+    log("  Setelah Bagian A1 terbukti: PRIMITIF-NYA ADA. Jadi alasan")
+    log("  'tidak bisa' GUGUR. Yang tersisa bukan masalah kemampuan, melainkan:")
+    log("    a) parameter owh.hook/owh.find_pattern belum diketahui (P2),")
+    log("    b) signature/offset fungsi loot belum diketahui (P3),")
+    log("    c) dan terutama: mengubah loot di game live melanggar ToS serta")
+    log("       persyaratanmu sendiri nomor 7.")
+    log("  Skrip ini tetap read-only — sekarang dibuktikan oleh Bagian A1c.")
+    log("")
     log("PERTANYAAN YANG BELUM TERJAWAB (butuh bukti tambahan):")
-    log("  - Apa nama API OWH yang sesungguhnya?  -> Bagian A2, kirim dump-nya.")
-    log("  - Apakah R12D benar jumlah loot?       -> Bagian D1, item G1..G4.")
-    log("  - Berapa cap per misi?                 -> CFG.mission_cap = nil.")
+    log("  - Parameter & return owh.hook / find_pattern? -> P2, butuh _docs.pluto.")
+    log("  - Signature/offset fungsi loot?               -> P3, butuh RE.")
+    log("  - Apakah R12D benar jumlah loot?              -> G1..G4.")
+    log("  - Berapa cap per misi?                        -> CFG.mission_cap = nil.")
+    log("  - Apakah daftar 25 anggota itu lengkap?       -> Bagian A1b, lihat")
+    log("    baris 'tidak-tercatat'. Kalau >0, ada yang belum saya dokumentasikan.")
 
     if t0 and type(os.clock) == "function" then
         log("selesai dalam %.3f detik.", os.clock() - t0)
@@ -975,7 +1264,7 @@ end
 --   1) ubah CFG.run_on_load menjadi false di atas, atau
 --   2) set global OWH_RESEARCH_NO_AUTORUN = true sebelum skrip ini dimuat
 --      (berguna untuk memuatnya sebagai pustaka dari hook lain).
-if CFG.run_on_load ~= false and read_flag("OWH_RESEARCH_NO_AUTORUN") ~= true then
+if CFG.run_on_load ~= false and lookup_global("OWH_RESEARCH_NO_AUTORUN") ~= true then
     local ok, err = pcall(M.run)
     if not ok then
         -- Skenario terburuk: tetap beri tahu pengguna lewat jalur paling dasar.
